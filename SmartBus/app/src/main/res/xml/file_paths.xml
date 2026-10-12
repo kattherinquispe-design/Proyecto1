@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!--
+    Rutas que la app puede compartir con la camara para entregarle un
+    archivo donde guardar la foto. Se usa exclusivamente para las
+    fotos de documentos del conductor.
+-->
+<paths>
+    <cache-path
+        name="camera_documents"
+        path=".camera/" />
+</paths>

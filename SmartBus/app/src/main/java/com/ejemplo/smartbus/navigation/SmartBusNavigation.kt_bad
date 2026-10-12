@@ -1,0 +1,72 @@
+/*
+========================================================
+MAPA
+========================================================
+*/
+
+@Composable
+private fun MapNavigationScreen(
+    currentTab: SmartBusTab,
+    onTabChange: (SmartBusTab) -> Unit
+) {
+    var showSearch by remember { mutableStateOf(false) }
+    var destination by remember { mutableStateOf<LatLng?>(null) }
+    var destinationName by remember { mutableStateOf<String?>(null) }
+    var userLoc by remember { mutableStateOf<LatLng?>(null) }
+
+    val context = LocalContext.current
+    val fused = remember { LocationServices.getFusedLocationProviderClient(context) }
+
+    LaunchedEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                fused.lastLocation.addOnSuccessListener { loc ->
+                    loc?.let { userLoc = LatLng(it.latitude, it.longitude) }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    if (showSearch) {
+        DestinationSearchScreen(
+            onBack = { showSearch = false },
+            currentLocation = userLoc,
+            onLocationSelected = { latLng, name ->
+                destination = latLng
+                destinationName = name
+                showSearch = false
+            }
+        )
+        return
+    }
+
+    Scaffold(
+        bottomBar = {
+            SmartBusBottomBar(
+                selectedTab = currentTab,
+                onTabSelected = onTabChange
+            )
+        }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            SmartBusMapScreen(
+                stops = com.ejemplo.smartbus.data.BusStopRepository.stops,
+                selectedStop = null,
+                selectedRoute = null,
+                onBack = { onTabChange(SmartBusTab.HOME) },
+                onOpenSearch = { showSearch = true },
+                destination = destination,
+                destinationName = destinationName
+            )
+        }
+    }
+}

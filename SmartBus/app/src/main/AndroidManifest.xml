@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ===================================================== -->
+    <!-- UBICACIÓN -->
+    <!-- ===================================================== -->
+
+    <!--
+        FINE y COARSE son para el mapa y el GPS en primer plano.
+        BACKGROUND_LOCATION es lo que permite seguir mandando la
+        posición con la pantalla apagada; en Android 10+ hay que
+        pedirla aparte, nunca en el mismo diálogo.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- ===================================================== -->
+    <!-- SERVICIO EN PRIMER PLANO -->
+    <!-- ===================================================== -->
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!--
+        Evitar que Android suspenda el GPS por ahorro de batería. Es lo
+        que mantiene la ubicación viva con la pantalla apagada tanto en
+        el conductor como en el pasajero; el usuario lo autoriza desde
+        el registro del conductor.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- ===================================================== -->
+    <!-- NOTIFICACIONES ANDROID 13+ -->
+    <!-- ===================================================== -->
+
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Documentos del conductor: fotos, cámara y archivos. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!--
+        El conductor no tiene por qué tener GPS: se declara que la
+        app puede trabajar sin él, pero el servicio de conductor sí
+        lo necesita para funcionar.
+    -->
+    <uses-feature
+        android:name="android.hardware.location.gps"
+        android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="SmartBus"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SmartBus">
+
+
+        <!-- ================================================= -->
+        <!-- SERVICIO GPS -->
+        <!-- ================================================= -->
+
+        <service
+            android:name=".location.LocationTrackingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!--
+            GPS del conductor. Es un servicio aparte del del pasajero
+            porque escribe en la base de datos: el pasajero ve esta
+            posición. Se detiene solo cuando el conductor se pone
+            offline o cierra sesión.
+        -->
+        <service
+            android:name=".location.DriverLocationService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- ================================================= -->
+        <!-- CAMARA (documentos del conductor) -->
+        <!-- ================================================= -->
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+
+        </provider>
+
+        <!-- ================================================= -->
+        <!-- GOOGLE MAPS -->
+        <!-- ================================================= -->
+
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <!--
+            Client ID de OAuth 2.0 de Google (tipo Web).
+            Se configura en local.properties con GOOGLE_WEB_CLIENT_ID=...
+        -->
+        <meta-data
+            android:name="com.ejemplo.smartbus.GOOGLE_CLIENT_ID"
+            android:value="${GOOGLE_WEB_CLIENT_ID}" />
+
+
+        <!-- ================================================= -->
+        <!-- ACTIVIDAD PRINCIPAL -->
+        <!-- ================================================= -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.SmartBus"
+            android:windowSoftInputMode="adjustResize">
+
+            <intent-filter>
+
+                <action
+                    android:name="android.intent.action.MAIN" />
+
+                <category
+                    android:name="android.intent.category.LAUNCHER" />
+
+            </intent-filter>
+
+        </activity>
+
+    </application>
+
+</manifest>
