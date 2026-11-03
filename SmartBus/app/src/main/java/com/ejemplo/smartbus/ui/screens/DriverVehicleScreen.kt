@@ -84,16 +84,28 @@ fun DriverVehicleScreen(
 
     val scope = rememberCoroutineScope()
 
-    var plate by remember { mutableStateOf(existing?.plate.orEmpty()) }
-    var brand by remember { mutableStateOf(existing?.brand.orEmpty()) }
-    var model by remember { mutableStateOf(existing?.model.orEmpty()) }
-    var year by remember { mutableStateOf(existing?.year?.takeIf { it > 0 }?.toString().orEmpty()) }
-    var color by remember { mutableStateOf(existing?.color.orEmpty()) }
-    var capacity by remember { mutableStateOf(existing?.capacity?.takeIf { it > 0 }?.toString().orEmpty()) }
-    var soatExpiry by remember { mutableStateOf("") }
-    var inspectionExpiry by remember { mutableStateOf("") }
-    var isPrimary by remember { mutableStateOf(existing?.isPrimary ?: true) }
-    var transitVehicleId by remember { mutableStateOf(existing?.transitVehicleId) }
+    val dateFormatter = remember {
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+    }
+
+    var plate by remember(existing) { mutableStateOf(existing?.plate.orEmpty()) }
+    var brand by remember(existing) { mutableStateOf(existing?.brand.orEmpty()) }
+    var model by remember(existing) { mutableStateOf(existing?.model.orEmpty()) }
+    var year by remember(existing) { mutableStateOf(existing?.year?.takeIf { it > 0 }?.toString().orEmpty()) }
+    var color by remember(existing) { mutableStateOf(existing?.color.orEmpty()) }
+    var capacity by remember(existing) { mutableStateOf(existing?.capacity?.takeIf { it > 0 }?.toString().orEmpty()) }
+    var soatExpiry by remember(existing) {
+        mutableStateOf(
+            existing?.soatExpiresAt?.takeIf { it > 0L }?.let { dateFormatter.format(java.util.Date(it)) }.orEmpty()
+        )
+    }
+    var inspectionExpiry by remember(existing) {
+        mutableStateOf(
+            existing?.inspectionExpiresAt?.takeIf { it > 0L }?.let { dateFormatter.format(java.util.Date(it)) }.orEmpty()
+        )
+    }
+    var isPrimary by remember(existing) { mutableStateOf(existing?.isPrimary ?: true) }
+    var transitVehicleId by remember(existing) { mutableStateOf(existing?.transitVehicleId) }
     var showUnitPicker by remember { mutableStateOf(false) }
 
     var error by remember { mutableStateOf<String?>(null) }
@@ -476,6 +488,9 @@ fun DriverVehicleScreen(
                         error = "El SOAT esta vencido. No puedes trabajar " +
                             "con el SOAT vencido."
 
+                    transitVehicleId == null ->
+                        error = "Escoge la ruta / unidad donde trabajas."
+
                     else -> {
 
                         saving = true
@@ -484,13 +499,13 @@ fun DriverVehicleScreen(
 
                             val cleanPlate = plate.trim().uppercase()
 
-                            val others = repository
+                            val mineHasPlate = repository
                                 .getVehicles(accountId)
-                                .filter { it.plateNormalized != cleanPlate }
+                                .any { it.plateNormalized == cleanPlate }
 
                             val alreadyTaken =
                                 repository.isPlateAlreadyRegistered(cleanPlate) &&
-                                    others.isEmpty()
+                                    !mineHasPlate
 
                             if (alreadyTaken) {
                                 error = "Esa placa ya esta registrada con " +

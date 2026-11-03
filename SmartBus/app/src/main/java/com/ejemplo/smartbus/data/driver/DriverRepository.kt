@@ -98,6 +98,7 @@ class DriverRepository(
         )
 
         profileDao.upsert(updated.toEntity())
+        refreshVerificationStatus(updated.accountId)
         syncDriverToFirestore(updated.accountId)
     }
 
@@ -112,7 +113,7 @@ class DriverRepository(
 
     /**
      * Sincroniza todos los datos del conductor (incluyendo su correo,
-     * vehiculo y estado de documentos) con la coleccion 'conductores'
+     * vehiculo, ruta de trabajo y estado/notas de documentos) con la coleccion 'conductores'
      * de Firebase Firestore para que queden respaldados y pueda iniciar
      * solo con su correo cuando vuelva a abrir la app.
      */
@@ -123,6 +124,7 @@ class DriverRepository(
             val docs = getDocuments(accountId)
             val approvedTypes = docs.filter { it.satisfied }.map { it.type.name }
             val uploadedTypes = docs.map { it.type.name }
+            val documentsNotes = docs.associate { it.type.name to it.note }
 
             val cleanEmail = profile.email.trim().lowercase()
             val docId = firestoreDocId(cleanEmail, accountId)
@@ -149,6 +151,12 @@ class DriverRepository(
                 "statusReason" to profile.statusReason,
                 "approvedDocuments" to approvedTypes,
                 "uploadedDocuments" to uploadedTypes,
+                "documentsNotes" to documentsNotes,
+                "requirementsComplete" to DriverValidators.canGoOnline(
+                    profile = profile,
+                    vehicle = primaryVehicle,
+                    approvedTypes = docs.filter { it.satisfied }.map { it.type }.toSet()
+                ),
                 "updatedAt" to System.currentTimeMillis()
             )
 
@@ -162,6 +170,7 @@ class DriverRepository(
                 data["vehicleSoatExpiresAt"] = primaryVehicle.soatExpiresAt ?: 0L
                 data["vehicleInspectionExpiresAt"] = primaryVehicle.inspectionExpiresAt ?: 0L
                 data["transitVehicleId"] = primaryVehicle.transitVehicleId ?: 0
+                data["routeId"] = primaryVehicle.transitVehicleId ?: 0
             }
 
             FirebaseFirestore.getInstance()
@@ -175,8 +184,8 @@ class DriverRepository(
 
     /**
      * Permite a un conductor ya registrado iniciar o recuperar su perfil,
-     * vehiculo y documentos ingresando unicamente su correo electronico,
-     * buscando primero en Room local y luego en Firebase Firestore ('conductores').
+     * vehiculo, ruta y documentos ingresando unicamente su correo electronico,
+     * buscando primero en Room local y complementando con Firebase Firestore ('conductores').
      */
     suspend fun loginOrRestoreByEmail(
         email: String,
@@ -218,8 +227,19 @@ class DriverRepository(
                 profileDao.upsert(updatedEntity)
             }
 
+            // Si en local faltan vehiculo o documentos que ya estaban en Firestore, restaurarlos tambien
+            val localVehicles = vehicleDao.getForAccount(effectiveAccountId)
+            val localApproved = getApprovedDocumentTypes(effectiveAccountId)
+            if (localVehicles.isEmpty() || localApproved.size < DriverRequirements.required.size) {
+                val cloudDoc = fetchDriverDocFromFirestore(cleanEmail, effectiveAccountId)
+                if (cloudDoc != null) {
+                    restoreVehicleAndDocsFromSnapshot(cloudDoc, effectiveAccountId, cleanEmail, updatedEntity.toModel().status)
+                }
+            }
+
+            refreshVerificationStatus(effectiveAccountId)
             syncDriverToFirestore(effectiveAccountId)
-            return updatedEntity.toModel()
+            return getProfile(effectiveAccountId) ?: updatedEntity.toModel()
         }
 
         // 2. Si no estaba en Room local (por ejemplo tras reinstalar o cerrar sesion),
@@ -234,7 +254,6 @@ class DriverRepository(
 
         if (docIdNumber.isBlank()) return null
 
-        // Si habia otro perfil con el mismo DNI bajo otro accountId, limpiarlo antes de insertar
         val statusStr = snapshot.getString("status") ?: DriverVerificationStatus.PENDING_REVIEW.name
         val restoredProfile = DriverProfile(
             accountId = effectiveAccountId,
@@ -261,14 +280,27 @@ class DriverRepository(
             profileDao.upsert(restoredProfile.toEntity())
         }
 
+        restoreVehicleAndDocsFromSnapshot(snapshot, effectiveAccountId, cleanEmail, restoredProfile.status)
+
+        refreshVerificationStatus(effectiveAccountId)
+        return getProfile(effectiveAccountId) ?: restoredProfile
+    }
+
+    private suspend fun restoreVehicleAndDocsFromSnapshot(
+        snapshot: DocumentSnapshot,
+        effectiveAccountId: String,
+        cleanEmail: String,
+        fallbackStatus: DriverVerificationStatus
+    ) {
         val plate = snapshot.getString("vehiclePlate").orEmpty().trim().uppercase()
         if (plate.isNotBlank()) {
             val existingVehicles = vehicleDao.getForAccount(effectiveAccountId)
+            val defaultSoat = System.currentTimeMillis() + 365L * 24L * 60L * 60L * 1000L
+            val soatExp = snapshot.getLong("vehicleSoatExpiresAt")?.takeIf { it > 0L } ?: defaultSoat
+            val inspExp = snapshot.getLong("vehicleInspectionExpiresAt")?.takeIf { it > 0L }
+            val transitId = (snapshot.getLong("transitVehicleId") ?: snapshot.getLong("routeId"))
+                ?.toInt()?.takeIf { it > 0 }
             if (existingVehicles.none { it.plate.equals(plate, ignoreCase = true) }) {
-                val defaultSoat = System.currentTimeMillis() + 365L * 24L * 60L * 60L * 1000L
-                val soatExp = snapshot.getLong("vehicleSoatExpiresAt")?.takeIf { it > 0L } ?: defaultSoat
-                val inspExp = snapshot.getLong("vehicleInspectionExpiresAt")?.takeIf { it > 0L }
-                val transitId = snapshot.getLong("transitVehicleId")?.toInt()?.takeIf { it > 0 }
                 runCatching {
                     saveVehicle(
                         DriverVehicle(
@@ -283,7 +315,7 @@ class DriverRepository(
                             isPrimary = true,
                             soatExpiresAt = soatExp,
                             inspectionExpiresAt = inspExp,
-                            status = restoredProfile.status,
+                            status = fallbackStatus,
                             transitVehicleId = transitId
                         )
                     )
@@ -295,34 +327,39 @@ class DriverRepository(
         val approvedList = (snapshot.get("approvedDocuments") as? List<String>).orEmpty()
         @Suppress("UNCHECKED_CAST")
         val uploadedList = (snapshot.get("uploadedDocuments") as? List<String>).orEmpty()
+        @Suppress("UNCHECKED_CAST")
+        val notesMap = (snapshot.get("documentsNotes") as? Map<String, String>).orEmpty()
         val allTypes = (approvedList + uploadedList).distinct()
+
+        val existingDocsByType = documentDao.getForAccount(effectiveAccountId).associateBy { it.type }
 
         allTypes.forEach { typeName ->
             val docType = runCatching { DriverDocumentType.valueOf(typeName) }.getOrNull()
             if (docType != null) {
                 val isApproved = typeName in approvedList ||
-                    restoredProfile.status == DriverVerificationStatus.VERIFIED
-                documentDao.upsert(
-                    DriverDocumentEntity(
-                        accountId = effectiveAccountId,
-                        type = docType.name,
-                        filePath = "cloud://conductores/$cleanEmail/${docType.name}",
-                        status = if (isApproved) {
-                            DriverDocumentStatus.APPROVED.name
-                        } else {
-                            DriverDocumentStatus.UPLOADED.name
-                        },
-                        note = "",
-                        expiresAt = null,
-                        uploadedAt = System.currentTimeMillis(),
-                        reviewedAt = if (isApproved) System.currentTimeMillis() else null
+                    fallbackStatus == DriverVerificationStatus.VERIFIED
+                val existingDoc = existingDocsByType[docType.name]
+                if (existingDoc == null || (isApproved && existingDoc.status != DriverDocumentStatus.APPROVED.name)) {
+                    documentDao.upsert(
+                        DriverDocumentEntity(
+                            id = existingDoc?.id ?: 0L,
+                            accountId = effectiveAccountId,
+                            type = docType.name,
+                            filePath = existingDoc?.filePath ?: "cloud://conductores/$cleanEmail/${docType.name}",
+                            status = if (isApproved) {
+                                DriverDocumentStatus.APPROVED.name
+                            } else {
+                                DriverDocumentStatus.UPLOADED.name
+                            },
+                            note = notesMap[docType.name] ?: existingDoc?.note ?: "Verificado y respaldado en la nube",
+                            expiresAt = existingDoc?.expiresAt,
+                            uploadedAt = existingDoc?.uploadedAt ?: System.currentTimeMillis(),
+                            reviewedAt = if (isApproved) System.currentTimeMillis() else null
+                        )
                     )
-                )
+                }
             }
         }
-
-        refreshVerificationStatus(effectiveAccountId)
-        return getProfile(effectiveAccountId) ?: restoredProfile
     }
 
     private suspend fun fetchDriverDocFromFirestore(
@@ -500,9 +537,27 @@ class DriverRepository(
             )
         }
 
+        refreshVerificationStatus(vehicle.accountId)
         syncDriverToFirestore(vehicle.accountId)
 
         return id
+    }
+
+    /**
+     * Asigna o cambia directamente la ruta donde trabaja el conductor
+     * para que se guarde en su vehiculo/perfil y se marque solo esa en el mapa.
+     */
+    suspend fun assignRoute(accountId: String, routeId: Int) {
+        val primary = getPrimaryVehicle(accountId)
+        if (primary != null) {
+            saveVehicle(primary.copy(transitVehicleId = routeId))
+        }
+        val currentShift = shiftDao.get(accountId)
+        if (currentShift != null) {
+            shiftDao.upsert(currentShift.copy(routeId = routeId))
+        }
+        refreshVerificationStatus(accountId)
+        syncDriverToFirestore(accountId)
     }
 
     suspend fun deleteVehicle(id: Long) =
@@ -527,27 +582,37 @@ class DriverRepository(
             .toSet()
 
     /**
-     * Sube un documento. Cada documento obligatorio que se sube mueve
-     * el perfil a "en revision"; cuando estan todos, la plataforma
-     * lo aprueba y el conductor puede trabajar.
+     * Sube un documento tras haber pasado la validacion de imagen y deteccion
+     * de rostro en vivo (para documentos biometricos). Cuando estan todos los
+     * documentos obligatorios aprobados y los datos del vehiculo/ruta completos,
+     * el conductor queda verificado automaticamente.
      */
     suspend fun uploadDocument(
         accountId: String,
         type: DriverDocumentType,
         filePath: String,
-        expiresAt: Long? = null
+        expiresAt: Long? = null,
+        note: String = "Documento verificado",
+        approved: Boolean = true
     ) {
+        val existing = documentDao.getForAccount(accountId)
+            .firstOrNull { it.type == type.name }
 
         documentDao.upsert(
             DriverDocumentEntity(
+                id = existing?.id ?: 0L,
                 accountId = accountId,
                 type = type.name,
                 filePath = filePath,
-                status = DriverDocumentStatus.UPLOADED.name,
-                note = "",
+                status = if (approved) {
+                    DriverDocumentStatus.APPROVED.name
+                } else {
+                    DriverDocumentStatus.UPLOADED.name
+                },
+                note = note,
                 expiresAt = expiresAt,
                 uploadedAt = System.currentTimeMillis(),
-                reviewedAt = null
+                reviewedAt = if (approved) System.currentTimeMillis() else null
             )
         )
 
@@ -644,7 +709,7 @@ class DriverRepository(
 
                 val vehicle = getPrimaryVehicle(accountId)
 
-                if (vehicle != null && vehicle.soatValid) {
+                if (vehicle != null && vehicle.soatValid && vehicle.transitVehicleId != null) {
                     DriverVerificationStatus.VERIFIED
                 } else {
                     DriverVerificationStatus.PENDING_REVIEW
@@ -711,7 +776,7 @@ class DriverRepository(
                 vehicleId = primary.id,
                 isOnline = true,
                 isOnTrip = false,
-                routeId = null,
+                routeId = primary.transitVehicleId,
                 startedAt = System.currentTimeMillis(),
                 lastLatitude = null,
                 lastLongitude = null,
@@ -745,21 +810,15 @@ class DriverRepository(
     /**
      * Ruta a la que esta asignado el conductor ahora mismo.
      *
-     * Se resuelve por el camino turno -> vehiculo -> unidad de
-     * transporte. Es la que se usa para comprobar que su ubicacion
-     * sigue el recorrido y no se marcha a otro lado.
+     * Se resuelve por el vehiculo principal o por el turno activo.
      */
     suspend fun getAssignedRouteId(accountId: String): Int? {
+        val primaryVehicle = getPrimaryVehicle(accountId)
+        val transitId = primaryVehicle?.transitVehicleId
+            ?: shiftDao.get(accountId)?.routeId
+            ?: return null
 
-        val shift = shiftDao.get(accountId) ?: return null
-
-        val driverVehicleId = shift.vehicleId ?: return null
-
-        val driverVehicle = vehicleDao.getById(driverVehicleId) ?: return null
-
-        val transitId = driverVehicle.transitVehicleId ?: return null
-
-        return transitVehicleDao.getById(transitId)?.routeId
+        return transitVehicleDao.getById(transitId)?.routeId ?: transitId
     }
 
     /**
@@ -769,6 +828,19 @@ class DriverRepository(
     suspend fun getAssignedRoutePoints(accountId: String): List<GeoPoint> {
 
         val routeId = getAssignedRouteId(accountId) ?: return emptyList()
+
+        val cloudRoute = com.ejemplo.smartbus.data.FirebaseRouteRepository.routes.value
+            .firstOrNull { it.id == routeId }
+            ?: com.ejemplo.smartbus.data.RouteRepository.routes
+                .firstOrNull { it.id == routeId }
+
+        if (cloudRoute != null) {
+            val combined = (cloudRoute.subidaPoints + cloudRoute.bajadaPoints)
+                .ifEmpty { cloudRoute.points }
+            if (combined.isNotEmpty()) {
+                return combined
+            }
+        }
 
         return routePointDao.getForRoute(routeId).map { point ->
             GeoPoint(
@@ -852,7 +924,7 @@ class DriverRepository(
      * Sin esto el conductor comparte GPS pero el pasajero no lo ve,
      * porque el mapa lee de la tabla de vehiculos y no de los turnos.
      * Solo se escribe si el vehiculo esta enlazado a una unidad de
-     * transito: un vehiculo sin asignar no tiene donde dibujarse.
+     * transito y TODOS los requisitos de seguridad estan cumplidos.
      */
     private suspend fun mirrorPositionToTransit(
         accountId: String,
@@ -866,6 +938,7 @@ class DriverRepository(
         try {
 
             val shift = shiftDao.get(accountId) ?: return
+            if (!shift.isOnline) return
 
             val driverVehicleId = shift.vehicleId ?: return
 
@@ -873,7 +946,15 @@ class DriverRepository(
 
             val transitId = driverVehicle.transitVehicleId ?: return
 
-            val profile = profileDao.get(accountId)
+            val profile = profileDao.get(accountId) ?: return
+
+            // Puerta de seguridad estricta: si falta cualquier documento obligatorio,
+            // rostro en vivo, SOAT o ruta, NO se conecta ni transmite al pasajero.
+            val approvedTypes = getApprovedDocumentTypes(accountId)
+            if (!DriverValidators.canGoOnline(profile.toModel(), driverVehicle.toModel(), approvedTypes)) {
+                detachFromTransitVehicle(shift)
+                return
+            }
 
             val plate = driverVehicle.plate
 
@@ -887,7 +968,7 @@ class DriverRepository(
                 isMock = false,
                 plate = plate,
                 plateCount = lastDigitsOf(plate),
-                driverName = profile?.fullName.orEmpty(),
+                driverName = profile.fullName,
                 capacity = driverVehicle.capacity,
                 occupancy = null,
                 status = if (shift.isOnTrip) "EN_RUTA" else "EN_SERVICIO",
@@ -899,8 +980,8 @@ class DriverRepository(
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val liveVehicleData = hashMapOf(
                     "conductorId" to accountId,
-                    "correo" to profile?.email.orEmpty(),
-                    "driverName" to profile?.fullName.orEmpty(),
+                    "correo" to profile.email,
+                    "driverName" to profile.fullName,
                     "plate" to plate,
                     "plateCount" to lastDigitsOf(plate),
                     "routeId" to transitId,

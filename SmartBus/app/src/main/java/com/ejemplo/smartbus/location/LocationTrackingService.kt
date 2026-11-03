@@ -4,14 +4,19 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.ejemplo.smartbus.MainActivity
 import com.ejemplo.smartbus.data.BoardingRewardManager
 import com.ejemplo.smartbus.data.BusStopRepository
 import com.ejemplo.smartbus.data.PointsEventManager
@@ -105,6 +110,7 @@ class LocationTrackingService : Service() {
     // =========================================================
 
     private var tracking = false
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private var arrivalNotificationStopId: Int? = null
 
@@ -224,9 +230,26 @@ class LocationTrackingService : Service() {
                 stopTracking()
                 stopSelf()
             }
+
+            null -> {
+                startTracking()
+            }
         }
 
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (tracking) {
+            val restartIntent = Intent(applicationContext, LocationTrackingService::class.java).apply {
+                action = ACTION_START
+            }
+            try {
+                ContextCompat.startForegroundService(applicationContext, restartIntent)
+            } catch (_: Exception) {
+            }
+        }
     }
 
 
@@ -299,6 +322,7 @@ class LocationTrackingService : Service() {
 
 
         tracking = true
+        acquireWakeLock()
 
         arrivalNotificationStopId = null
 
@@ -915,6 +939,33 @@ class LocationTrackingService : Service() {
     // DETENER GPS
     // =========================================================
 
+    private fun acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wakeLock = powerManager?.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "SmartBus:PassengerGpsWakeLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(4 * 60 * 60 * 1000L)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     private fun stopTracking() {
 
         if (
@@ -928,6 +979,7 @@ class LocationTrackingService : Service() {
                 )
         }
 
+        releaseWakeLock()
         tracking = false
 
         arrivalNotificationStopId =
@@ -984,21 +1036,32 @@ class LocationTrackingService : Service() {
     private fun createPersistentNotification():
             Notification {
 
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val pendingIntent = PendingIntent.getActivity(this, 1001, openIntent, flags)
+
         return NotificationCompat
             .Builder(
                 this,
                 CHANNEL_ID
             )
             .setContentTitle(
-                "SmartBus activo"
+                "MistiGo activo en segundo plano"
             )
             .setContentText(
-                "Detectando tu recorrido y abordaje"
+                "Detectando paraderos, viajes y puntos (+20 pts)"
             )
             .setSmallIcon(
                 android.R.drawable
                     .ic_menu_mylocation
             )
+            .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(
                 NotificationCompat

@@ -1,6 +1,7 @@
 package com.ejemplo.smartbus.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,18 +10,24 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Route
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -30,7 +37,9 @@ import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -87,6 +96,8 @@ fun DriverHomeScreen(
     blockers: List<DriverBlocker>,
     isWorking: Boolean,
     route: BusRoute?,
+    availableRoutes: List<BusRoute> = emptyList(),
+    onSelectRoute: (BusRoute) -> Unit = {},
     onToggleOnline: () -> Unit,
     onOpenProfile: () -> Unit,
     onOpenDocuments: () -> Unit,
@@ -95,6 +106,7 @@ fun DriverHomeScreen(
     onSwitchToPassenger: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var showRouteSelector by remember { mutableStateOf(false) }
 
     /**
      * Posicion del conductor en el mapa, solo si esta trabajando y su
@@ -110,13 +122,22 @@ fun DriverHomeScreen(
         }
     }
 
-    val routeStart = route?.points?.firstOrNull()?.let {
-        LatLng(it.latitude, it.longitude)
+    val routeSubida = remember(route) { route?.subidaPoints.orEmpty() }
+    val routeBajada = remember(route) { route?.bajadaPoints.orEmpty() }
+    val routeAllPoints = remember(route) {
+        (route?.subidaPoints.orEmpty() + route?.bajadaPoints.orEmpty())
+            .ifEmpty { route?.points.orEmpty() }
+    }
+
+    val routeStart = remember(routeAllPoints) {
+        routeAllPoints.firstOrNull()?.let {
+            LatLng(it.latitude, it.longitude)
+        }
     }
 
     // El comienzo de la ruta hace de fondo cuando el GPS todavia no
-    // ha devuelto ninguna posicion.
-    val initial = driverPosition ?: routeStart ?: LatLng(-12.0464, -77.0428)
+    // ha devuelto ninguna posicion (Arequipa por defecto).
+    val initial = driverPosition ?: routeStart ?: LatLng(-16.4090, -71.5375)
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(initial, 13f)
@@ -139,6 +160,17 @@ fun DriverHomeScreen(
         }
     }
 
+    // Cuando el conductor escoge su ruta de trabajo, centrar el mapa en esa ruta
+    LaunchedEffect(route?.id) {
+        val start = routeStart
+        if (start != null && driverPosition == null) {
+            cameraPositionState.animate(
+                CameraUpdateFactory.newLatLngZoom(start, 13.5f),
+                600
+            )
+        }
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
 
         GoogleMap(
@@ -147,7 +179,7 @@ fun DriverHomeScreen(
             properties = MapProperties(
                 isMyLocationEnabled = false,
                 mapType = MapType.NORMAL,
-                minZoomPreference = 12f,
+                minZoomPreference = 11f,
                 maxZoomPreference = 20f
             ),
             uiSettings = MapUiSettings(
@@ -156,34 +188,51 @@ fun DriverHomeScreen(
                 compassEnabled = true,
                 mapToolbarEnabled = false
             ),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 120.dp, bottom = 120.dp)
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 130.dp, bottom = 180.dp)
         ) {
-            // La ruta asignada, dibujada de la misma forma que la ve el
-            // pasajero, para que el conductor confie en lo que muestra.
-            route?.points?.takeIf { it.size >= 2 }?.let { points ->
+            // Se marca UNICAMENTE la ruta donde trabaja el conductor
+            val routeColor = SmartBusBlue
+
+            if (routeSubida.size >= 2 || routeBajada.size >= 2) {
+                if (routeSubida.size >= 2) {
+                    Polyline(
+                        points = routeSubida.map { LatLng(it.latitude, it.longitude) },
+                        color = routeColor,
+                        width = 11f
+                    )
+                }
+                if (routeBajada.size >= 2) {
+                    Polyline(
+                        points = routeBajada.map { LatLng(it.latitude, it.longitude) },
+                        color = routeColor.copy(alpha = 0.78f),
+                        width = 9f
+                    )
+                }
+            } else if (routeAllPoints.size >= 2) {
                 Polyline(
-                    points = points.map { LatLng(it.latitude, it.longitude) },
-                    color = SmartBusBlue,
-                    width = 9f
+                    points = routeAllPoints.map { LatLng(it.latitude, it.longitude) },
+                    color = routeColor,
+                    width = 10f
                 )
             }
 
-            // Punto de partida y llegada de la ruta, para que de un
-            // vistazo el conductor sepa hacia donde va.
-            route?.points?.firstOrNull()?.let { start ->
-                Marker(
-                    state = MarkerState(LatLng(start.latitude, start.longitude)),
-                    title = route.origin,
-                    snippet = "Inicio de ruta"
-                )
-            }
+            // Punto de partida y llegada de la ruta elegida
+            if (route != null) {
+                routeAllPoints.firstOrNull()?.let { start ->
+                    Marker(
+                        state = MarkerState(LatLng(start.latitude, start.longitude)),
+                        title = route.origin.ifBlank { route.name },
+                        snippet = "Inicio de ruta (${route.code})"
+                    )
+                }
 
-            route?.points?.lastOrNull()?.let { end ->
-                Marker(
-                    state = MarkerState(LatLng(end.latitude, end.longitude)),
-                    title = route.destination,
-                    snippet = "Fin de ruta"
-                )
+                routeAllPoints.lastOrNull()?.let { end ->
+                    Marker(
+                        state = MarkerState(LatLng(end.latitude, end.longitude)),
+                        title = route.destination.ifBlank { route.name },
+                        snippet = "Fin de ruta (${route.code})"
+                    )
+                }
             }
 
             driverPosition?.let { position ->
@@ -195,17 +244,18 @@ fun DriverHomeScreen(
             }
         }
 
-        // ---- Encabezado: que ruta me toca hoy ----
+        // ---- Encabezado: que ruta me toca hoy + boton para elegir ruta ----
 
         Card(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(start = 14.dp, top = 14.dp),
+                .padding(start = 14.dp, top = 14.dp, end = 190.dp)
+                .clickable { showRouteSelector = true },
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color.White),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
 
                 if (route != null) {
                     Text(
@@ -216,30 +266,35 @@ fun DriverHomeScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = "${route.origin} → ${route.destination}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SmartBusTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (route.origin.isNotBlank() || route.destination.isNotBlank()) {
+                        Text(
+                            text = "${route.origin} → ${route.destination}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SmartBusTextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 } else {
                     Text(
-                        text = "Sin ruta asignada",
+                        text = "Sin ruta seleccionada",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        color = SmartBusText
+                        color = SmartBusRed
                     )
                     Text(
-                        text = "Asigna tu unidad en los ajustes del vehiculo.",
+                        text = "Toca aquí para escoger tu ruta de trabajo",
                         style = MaterialTheme.typography.bodySmall,
-                        color = SmartBusTextSecondary
+                        color = SmartBusBlue
                     )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Box(
                         modifier = Modifier
                             .size(8.dp)
@@ -249,12 +304,17 @@ fun DriverHomeScreen(
                                 else SmartBusYellow
                             )
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = if (isWorking) "En servicio" else "Desconectado",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = if (isWorking) SmartBusGreen else SmartBusTextSecondary
+                    )
+                    Text(
+                        text = "· Cambiar ruta",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = SmartBusBlue
                     )
                 }
             }
@@ -271,6 +331,14 @@ fun DriverHomeScreen(
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             Row(modifier = Modifier.padding(4.dp)) {
+                IconButton(onClick = { showRouteSelector = true }) {
+                    Icon(
+                        Icons.Default.Route,
+                        contentDescription = "Elegir ruta de trabajo",
+                        tint = SmartBusBlue,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
                 IconButton(onClick = onOpenProfile) {
                     Icon(
                         Icons.Default.Person,
@@ -306,126 +374,179 @@ fun DriverHomeScreen(
             }
         }
 
-        // ---- Boton principal y avisos, pegados abajo ----
+        // ---- Boton principal y avisos, apilados abajo sin solaparse ----
 
-        if (!isWorking && blockers.isNotEmpty()) {
-            Card(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = SmartBusYellow.copy(alpha = 0.12f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.Block,
-                        contentDescription = null,
-                        tint = SmartBusYellow,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Pendientes: ${blockers.size}",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = SmartBusText
-                        )
-                        Text(
-                            text = blockers.first().title,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = SmartBusTextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-        }
-
-        Card(
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = if (!isWorking && blockers.isNotEmpty()) 0.dp else 14.dp),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-
-                Text(
-                    text = when {
-                        isWorking ->
-                            "Tu vehiculo se ve en el mapa del pasajero."
-
-                        blockers.isEmpty() ->
-                            "Estas listo. Enciende y el pasajero te vera llegar."
-
-                        else ->
-                            "Completa lo que falta para poder trabajar."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = SmartBusTextSecondary
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Button(
-                    onClick = onToggleOnline,
-                    enabled = isWorking || blockers.isEmpty(),
-                    colors = if (isWorking) {
-                        ButtonDefaults.buttonColors(
-                            containerColor = SmartBusRed,
-                            contentColor = Color.White
-                        )
-                    } else {
-                        ButtonDefaults.buttonColors(
-                            containerColor = SmartBusBlue,
-                            contentColor = Color.White
-                        )
-                    },
+            if (!isWorking && blockers.isNotEmpty()) {
+                val primaryBlocker = blockers.first()
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
-                ) {
-                    Text(
-                        text = if (isWorking) "Terminar servicio" else "Empezar a conducir",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Boton pequeno y amarillo para salir del modo conductor
-                // sin tener que buscar el menu: esta siempre a la vista.
-                Button(
-                    onClick = onSwitchToPassenger,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = SmartBusYellow,
-                        contentColor = SmartBusText
+                        .clickable {
+                            when {
+                                primaryBlocker.title.contains("documento", ignoreCase = true) ||
+                                    primaryBlocker.title.contains("rechazado", ignoreCase = true) ->
+                                    onOpenDocuments()
+                                primaryBlocker.title.contains("vehiculo", ignoreCase = true) ||
+                                    primaryBlocker.title.contains("SOAT", ignoreCase = true) ||
+                                    primaryBlocker.title.contains("Inspeccion", ignoreCase = true) ->
+                                    onOpenVehicle()
+                                primaryBlocker.title.contains("ruta", ignoreCase = true) ->
+                                    if (vehicle != null && availableRoutes.isNotEmpty()) {
+                                        showRouteSelector = true
+                                    } else {
+                                        onOpenVehicle()
+                                    }
+                                else -> onOpenProfile()
+                            }
+                        },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFFFF8E1)
                     ),
-                    modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .height(40.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
                 ) {
-                    Icon(
-                        Icons.Default.Person,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Modo pasajero",
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Block,
+                            contentDescription = null,
+                            tint = SmartBusRed,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "🔒 Seguridad activa · Pendientes (${blockers.size}): ${primaryBlocker.title}",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = SmartBusText
+                            )
+                            Text(
+                                text = "${primaryBlocker.detail} (Toca aquí para completar)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SmartBusTextSecondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = when {
+                                isWorking ->
+                                    "✅ En línea: tu bus y ruta se transmiten en vivo."
+
+                                blockers.isEmpty() ->
+                                    "✅ Verificado y seguro. Listo para salir en ruta."
+
+                                else ->
+                                    "Completa tus requisitos y ruta para conectarte con pasajeros."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (blockers.isEmpty() || isWorking) SmartBusGreen else SmartBusTextSecondary,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        OutlinedButton(
+                            onClick = { showRouteSelector = true },
+                            modifier = Modifier.padding(start = 8.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Route,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (route != null) "Ruta: ${route.code}" else "Elegir ruta",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Button(
+                        onClick = onToggleOnline,
+                        enabled = isWorking || blockers.isEmpty(),
+                        colors = if (isWorking) {
+                            ButtonDefaults.buttonColors(
+                                containerColor = SmartBusRed,
+                                contentColor = Color.White
+                            )
+                        } else {
+                            ButtonDefaults.buttonColors(
+                                containerColor = SmartBusBlue,
+                                contentColor = Color.White
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                    ) {
+                        Text(
+                            text = if (isWorking) {
+                                "Terminar servicio"
+                            } else if (blockers.isEmpty()) {
+                                "Empezar a conducir"
+                            } else {
+                                "🔒 Completa requisitos para conectarte"
+                            },
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Boton pequeno y amarillo para salir del modo conductor
+                    // sin tener que buscar el menu: esta siempre a la vista.
+                    Button(
+                        onClick = onSwitchToPassenger,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SmartBusYellow,
+                            contentColor = SmartBusText
+                        ),
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .height(38.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Modo pasajero",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
         }
@@ -446,7 +567,7 @@ fun DriverHomeScreen(
             },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 150.dp),
+                .padding(end = 16.dp, bottom = 210.dp),
             containerColor = Color.White,
             contentColor = SmartBusBlue,
             elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp)
@@ -454,6 +575,109 @@ fun DriverHomeScreen(
             Icon(
                 Icons.Default.MyLocation,
                 contentDescription = "Centrar en mi posicion"
+            )
+        }
+
+        // ---- Dialogo para elegir la ruta donde trabaja el conductor ----
+        if (showRouteSelector) {
+            AlertDialog(
+                onDismissRequest = { showRouteSelector = false },
+                title = {
+                    Text(
+                        text = "🛣️ Escoge la ruta donde trabajas",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Se marcará únicamente tu ruta seleccionada en el mapa y los pasajeros te verán en esta línea:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SmartBusTextSecondary
+                        )
+                        if (availableRoutes.isEmpty()) {
+                            Text(
+                                text = "Cargando rutas disponibles...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SmartBusText
+                            )
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 340.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                items(availableRoutes, key = { it.id }) { itemRoute ->
+                                    val selected = route?.id == itemRoute.id
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                onSelectRoute(itemRoute)
+                                                showRouteSelector = false
+                                            },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (selected) {
+                                                SmartBusBlue.copy(alpha = 0.12f)
+                                            } else {
+                                                Color(0xFFF5F7FA)
+                                            }
+                                        )
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(12.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        if (selected) SmartBusGreen else SmartBusBlue
+                                                    )
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "${itemRoute.code} - ${itemRoute.name}",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = SmartBusText
+                                                )
+                                                if (itemRoute.origin.isNotBlank() || itemRoute.destination.isNotBlank()) {
+                                                    Text(
+                                                        text = "${itemRoute.origin} → ${itemRoute.destination}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = SmartBusTextSecondary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                            if (selected) {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = "Seleccionada",
+                                                    tint = SmartBusGreen,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showRouteSelector = false }) {
+                        Text("Cerrar")
+                    }
+                }
             )
         }
     }

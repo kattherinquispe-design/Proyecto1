@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -12,10 +13,12 @@ import android.content.pm.ServiceInfo
 import android.location.Location
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.ejemplo.smartbus.MainActivity
 import com.ejemplo.smartbus.data.SessionManager
 import com.ejemplo.smartbus.data.driver.DriverRepository
 import com.ejemplo.smartbus.data.model.GeoPoint
@@ -58,6 +61,7 @@ class DriverLocationService : Service() {
 
     private var accountId: String? = null
     private var tracking = false
+    private var wakeLock: PowerManager.WakeLock? = null
 
     /**
      * Trazado de la ruta asignada. Se carga al empezar y sirve para
@@ -95,6 +99,7 @@ class DriverLocationService : Service() {
 
             ACTION_START -> {
                 accountId = intent.getStringExtra(EXTRA_ACCOUNT_ID)
+                    ?: SessionManager.get(this).session.value?.storageKey
                 startTracking()
             }
 
@@ -105,11 +110,25 @@ class DriverLocationService : Service() {
                 }
                 shutdown()
             }
+
+            null -> {
+                // Reiniciado automaticamente por Android en segundo plano (START_STICKY)
+                accountId = SessionManager.get(this).session.value?.storageKey
+                startTracking()
+            }
         }
 
         // Si el sistema mata el servicio, se reinicia solo con la
         // ultima cuenta conocida para no perder el viaje.
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        val currentId = accountId ?: SessionManager.get(this).session.value?.storageKey
+        if (tracking && currentId != null) {
+            start(applicationContext, currentId)
+        }
     }
 
     // =====================================================
@@ -151,6 +170,8 @@ class DriverLocationService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+
+        acquireWakeLock()
 
         tracking = true
         deviationStartedAt = 0L
@@ -448,6 +469,34 @@ class DriverLocationService : Service() {
         return best
     }
 
+    private fun acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wakeLock = powerManager?.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "SmartBus:DriverGpsWakeLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(8 * 60 * 60 * 1000L) // Hasta 8 horas de turno continuo
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo adquirir WakeLock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     private fun stopTracking() {
 
         if (::fusedLocationClient.isInitialized && ::locationCallback.isInitialized) {            try {
@@ -457,6 +506,7 @@ class DriverLocationService : Service() {
             }
         }
 
+        releaseWakeLock()
         tracking = false
     }
 
@@ -498,14 +548,26 @@ class DriverLocationService : Service() {
             ?.createNotificationChannel(channel)
     }
 
-    private fun createPersistentNotification(): Notification =
-        NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Estas en servicio")
-            .setContentText("El pasajero puede ver donde vas")
+    private fun createPersistentNotification(): Notification {
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val pendingIntent = PendingIntent.getActivity(this, 2001, openIntent, flags)
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("🚌 MistiGo Conductor · En servicio")
+            .setContentText("Transmitiendo ubicación de tu ruta en segundo plano")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 

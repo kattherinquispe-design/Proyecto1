@@ -44,8 +44,10 @@ import com.ejemplo.smartbus.data.driver.DriverGateResult
 import com.ejemplo.smartbus.data.driver.DriverRepository
 import com.ejemplo.smartbus.data.driver.DriverReviewSimulator
 import com.ejemplo.smartbus.data.driver.DriverValidators
+import com.ejemplo.smartbus.data.driver.FaceDetectionValidator
 import com.ejemplo.smartbus.data.FirebaseRouteRepository
 import com.ejemplo.smartbus.data.RoomTransitRepository
+import com.ejemplo.smartbus.data.RouteRepository
 import com.ejemplo.smartbus.data.model.DriverDocumentType
 import com.ejemplo.smartbus.location.DriverLocationService
 import com.ejemplo.smartbus.ui.components.rememberCameraCapture
@@ -55,6 +57,7 @@ import com.ejemplo.smartbus.ui.screens.DriverHomeScreen
 import com.ejemplo.smartbus.ui.screens.DriverOnboardingScreen
 import com.ejemplo.smartbus.ui.screens.DriverVehicleScreen
 import com.ejemplo.smartbus.ui.screens.VehicleUnit
+import java.io.File
 import kotlinx.coroutines.launch
 
 /**
@@ -105,9 +108,17 @@ fun DriverFlow(
      */
     val firebaseRoutes by FirebaseRouteRepository.routes.collectAsState()
 
-    val transitUnits = remember(firebaseRoutes, vehiclesSnapshot, routesSnapshot) {
-        if (firebaseRoutes.isNotEmpty()) {
-            firebaseRoutes.map { route ->
+    val allRoutes = remember(firebaseRoutes, routesSnapshot) {
+        when {
+            firebaseRoutes.isNotEmpty() -> firebaseRoutes
+            routesSnapshot.isNotEmpty() -> routesSnapshot
+            else -> RouteRepository.routes
+        }
+    }
+
+    val transitUnits = remember(allRoutes, vehiclesSnapshot) {
+        if (allRoutes.isNotEmpty()) {
+            allRoutes.map { route ->
                 VehicleUnit(
                     id = route.id,
                     code = route.code,
@@ -119,10 +130,7 @@ fun DriverFlow(
                 VehicleUnit(
                     id = vehicle.id,
                     code = vehicle.code,
-                    routeName = routesSnapshot
-                        .firstOrNull { it.id == vehicle.routeId }
-                        ?.let { "${it.code} - ${it.name}" }
-                        ?: "Sin ruta"
+                    routeName = "Unidad ${vehicle.code}"
                 )
             }
         }
@@ -192,14 +200,13 @@ fun DriverFlow(
      * Ruta asignada al conductor: es la ruta de la unidad de transito
      * que el conductor eligio como suya. Es lo que ve en el mapa.
      */
-    val assignedRoute = remember(primaryVehicle, firebaseRoutes, routesSnapshot, vehiclesSnapshot) {
+    val assignedRoute = remember(primaryVehicle, allRoutes, vehiclesSnapshot) {
         val transitId = primaryVehicle?.transitVehicleId
             ?: return@remember null
 
-        firebaseRoutes.firstOrNull { it.id == transitId }
-            ?: routesSnapshot.firstOrNull { it.id == transitId }
+        allRoutes.firstOrNull { it.id == transitId }
             ?: vehiclesSnapshot.firstOrNull { it.id == transitId }?.let { unit ->
-                routesSnapshot.firstOrNull { it.id == unit.routeId }
+                allRoutes.firstOrNull { it.id == unit.routeId }
             }
     }
 
@@ -349,6 +356,18 @@ fun DriverFlow(
                     blockers = blockers,
                     isWorking = isWorking,
                     route = assignedRoute,
+                    availableRoutes = allRoutes,
+                    onSelectRoute = { selectedRoute ->
+                        scope.launch {
+                            if (primaryVehicle == null) {
+                                screen = DriverScreen.VEHICLE
+                                snackbar.showSnackbar("Registra primero tu vehículo y elige la ruta ${selectedRoute.code}")
+                            } else {
+                                repository.assignRoute(accountId, selectedRoute.id)
+                                snackbar.showSnackbar("Ruta asignada: ${selectedRoute.code} - ${selectedRoute.name}")
+                            }
+                        }
+                    },
                     onToggleOnline = {
 
                         if (isWorking) {
@@ -397,7 +416,7 @@ fun DriverFlow(
                         screen = DriverScreen.DOCUMENTS
                         scope.launch {
                             snackbar.showSnackbar(
-                                "Vehiculo guardado. Ahora sube tus documentos."
+                                "Vehiculo y ruta guardados. Ahora completa tus documentos."
                             )
                         }
                     }
@@ -413,8 +432,7 @@ fun DriverFlow(
                         screen = DriverScreen.HOME
                         scope.launch {
                             snackbar.showSnackbar(
-                                "Documentos enviados. Te avisamos cuando " +
-                                    "sean revisados."
+                                "Documentación verificada y respaldada en la base de datos."
                             )
                         }
                     }
@@ -430,7 +448,8 @@ fun DriverFlow(
 }
 
 /**
- * Paso de documentos con el selector de archivos de verdad.
+ * Paso de documentos con validacion de imagen y sistema de deteccion
+ * de rostros en vivo para las fotos biometricas del conductor.
  *
  * El archivo se copia al almacenamiento interno y de ahi se guarda
  * solo la ruta: si se guardara la Uri, al reinstalar o al limpiar la
@@ -452,6 +471,7 @@ private fun DocumentsStep(
     var pendingType by remember { mutableStateOf<DriverDocumentType?>(null) }
     var chooseSourceFor by remember { mutableStateOf<DriverDocumentType?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var validationError by remember { mutableStateOf<String?>(null) }
 
     fun onFileReady(path: String?) {
 
@@ -466,42 +486,54 @@ private fun DocumentsStep(
 
         scope.launch {
 
-            if (path.isHttpOrFileUri()) {
-
-                // Viene de la galeria: copiar al almacenamiento interno
-                // antes de guardar la ruta.
-                val copied = DriverDocumentStorage.copyIntoAppStorage(
+            val finalPath = if (path.isHttpOrFileUri()) {
+                // Viene de la galeria: copiar al almacenamiento interno antes de validar
+                DriverDocumentStorage.copyIntoAppStorage(
                     context = context,
                     accountId = accountId,
                     type = type,
                     source = Uri.parse(path)
                 )
-
-                if (copied == null) {
-                    Toast.makeText(
-                        context,
-                        "No se pudo leer el archivo. Intenta con una foto.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    busy = false
-                    return@launch
-                }
-
-                repository.uploadDocument(
-                    accountId = accountId,
-                    type = type,
-                    filePath = copied
-                )
-
             } else {
-
-                // Viene de la camara: ya es un archivo del telefono.
-                repository.uploadDocument(
-                    accountId = accountId,
-                    type = type,
-                    filePath = path
-                )
+                path
             }
+
+            if (finalPath == null) {
+                Toast.makeText(
+                    context,
+                    "No se pudo leer el archivo. Intenta tomar la foto nuevamente.",
+                    Toast.LENGTH_LONG
+                ).show()
+                busy = false
+                return@launch
+            }
+
+            // Validar documento y deteccion de rostro en vivo (si es foto biometrica)
+            val validation = FaceDetectionValidator.validateCapturedPhoto(
+                filePath = finalPath,
+                type = type
+            )
+
+            if (!validation.valid) {
+                runCatching { File(finalPath).delete() }
+                validationError = validation.message
+                busy = false
+                return@launch
+            }
+
+            repository.uploadDocument(
+                accountId = accountId,
+                type = type,
+                filePath = finalPath,
+                note = validation.message,
+                approved = true
+            )
+
+            Toast.makeText(
+                context,
+                "✅ ${validation.message}",
+                Toast.LENGTH_SHORT
+            ).show()
 
             busy = false
         }
@@ -538,26 +570,58 @@ private fun DocumentsStep(
                     repository.deleteDocument(accountId, type)
                 }
             },
-            onBack = onBack
+            onBack = onBack,
+            onFinish = onFinish
         )
 
-        // Al tocar "Subir", se pregunta de donde: foto con la camara
-        // o un archivo de la galeria. Para un DNI lo natural es la
-        // camara; para un documento ya escaneado, la galeria.
+        validationError?.let { errorMsg ->
+            AlertDialog(
+                onDismissRequest = { validationError = null },
+                title = {
+                    Text(
+                        "⚠️ Verificación de seguridad rechazada",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = errorMsg,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SmartBusText
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = { validationError = null }) {
+                        Text("Entendido, volver a intentar")
+                    }
+                }
+            )
+        }
+
+        // Al tocar "Subir", si requiere rostro en vivo solo permite camara en tiempo real.
         chooseSourceFor?.let { type ->
+            val requiresLiveFace = FaceDetectionValidator.requiresLiveFaceDetection(type)
 
             AlertDialog(
                 onDismissRequest = { chooseSourceFor = null },
                 title = {
                     Text(
-                        "Captura de ${type.title}",
+                        if (requiresLiveFace) {
+                            "🔒 Detección de rostro en vivo: ${type.title}"
+                        } else {
+                            "Captura de ${type.title}"
+                        },
                         fontWeight = FontWeight.Bold
                     )
                 },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "Por seguridad y verificación de identidad, se requiere tomar la foto en tiempo real con la cámara del dispositivo.",
+                            text = if (requiresLiveFace) {
+                                "Por seguridad, esta verificación biométrica exige tomar una foto de tu rostro en vivo con la cámara (se bloqueará si no se detecta un rostro humano claro)."
+                            } else {
+                                "Toma una foto nítida y legible del documento para guardarlo en tu cuenta verificada."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = SmartBusTextSecondary
                         )
@@ -581,17 +645,25 @@ private fun DocumentsStep(
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("📷 Tomar foto en tiempo real (Cámara)")
+                            Text(
+                                if (requiresLiveFace) {
+                                    "📷 Tomar foto de rostro en vivo (Cámara)"
+                                } else {
+                                    "📷 Tomar foto en tiempo real (Cámara)"
+                                }
+                            )
                         }
-                        OutlinedButton(
-                            onClick = {
-                                pendingType = type
-                                chooseSourceFor = null
-                                picker.launch("image/*")
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("📁 Seleccionar documento / Galería")
+                        if (!requiresLiveFace) {
+                            OutlinedButton(
+                                onClick = {
+                                    pendingType = type
+                                    chooseSourceFor = null
+                                    picker.launch("image/*")
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("📁 Seleccionar documento / Galería")
+                            }
                         }
                     }
                 },
@@ -609,7 +681,7 @@ private fun DocumentsStep(
         if (busy) {
 
             Text(
-                text = "Guardando documento...",
+                text = "Analizando y verificando documento...",
                 modifier = Modifier.padding(16.dp)
             )
         }

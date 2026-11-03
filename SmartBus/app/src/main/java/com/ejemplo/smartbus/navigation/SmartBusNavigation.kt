@@ -178,6 +178,15 @@ fun SmartBusNavigation() {
     var trackingStartedManually by remember { mutableStateOf(false) }
 
     var redeemedCode by remember { mutableStateOf<String?>(null) }
+
+    val passengerBackgroundLocationLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) {
+            trackingStartedManually = true
+            TrackingManager(context).startTracking()
+        }
+
     val locationPermissionLauncher =
         rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -192,6 +201,16 @@ fun SmartBusNavigation() {
             if (fineGranted || coarseGranted) {
                 trackingStartedManually = true
                 TrackingManager(context).startTracking()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACCESS_BACKGROUND_LOCATION
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    passengerBackgroundLocationLauncher.launch(
+                        Manifest.permission.ACCESS_BACKGROUND_LOCATION
+                    )
+                }
             } else {
                 trackingStartedManually = false
 
@@ -208,7 +227,7 @@ fun SmartBusNavigation() {
 
     // El pasajero tambien necesita su ubicacion real: apenas entra, si
     // todavia no la tiene se le pide; si ya la concedio, no se le
-    // vuelve a molestar y sigue activa.
+    // vuelve a molestar y sigue activa en segundo plano.
     LaunchedEffect(Unit) {
 
         val fineGranted = ContextCompat.checkSelfPermission(
@@ -231,6 +250,16 @@ fun SmartBusNavigation() {
         } else {
             trackingStartedManually = true
             TrackingManager(context).startTracking()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_BACKGROUND_LOCATION
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                passengerBackgroundLocationLauncher.launch(
+                    Manifest.permission.ACCESS_BACKGROUND_LOCATION
+                )
+            }
         }
     }
 

@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ejemplo.smartbus.data.driver.DriverRequirements
 import com.ejemplo.smartbus.data.driver.DriverStep
+import com.ejemplo.smartbus.data.driver.FaceDetectionValidator
 import com.ejemplo.smartbus.data.model.DriverDocument
 import com.ejemplo.smartbus.data.model.DriverDocumentStatus
 import com.ejemplo.smartbus.data.model.DriverDocumentType
@@ -75,6 +76,7 @@ fun DriverDocumentsScreen(
     onUpload: (DriverDocumentType) -> Unit,
     onDelete: (DriverDocumentType) -> Unit,
     onBack: () -> Unit,
+    onFinish: () -> Unit = onBack,
     modifier: Modifier = Modifier
 ) {
 
@@ -113,7 +115,7 @@ fun DriverDocumentsScreen(
             }
 
             Text(
-                text = "Documentos para conducir",
+                text = "Documentos y Verificación Biométrica",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = SmartBusText
@@ -122,8 +124,7 @@ fun DriverDocumentsScreen(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "La plataforma revisa cada documento. Solo con todos " +
-                    "aprobados y el SOAT vigente puedes ponerte en servicio.",
+                text = "Por tu seguridad y la de los pasajeros, no podrás conectarte sin todos los documentos verificados y detección de rostro en vivo. Solo se hace una vez y queda guardado en tu cuenta.",
                 style = MaterialTheme.typography.bodySmall,
                 color = SmartBusTextSecondary
             )
@@ -141,6 +142,22 @@ fun DriverDocumentsScreen(
                 color = if (completed == total) SmartBusGreen else SmartBusBlue,
                 trackColor = SmartBusDivider
             )
+
+            if (completed == total && total > 0) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = onFinish,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = SmartBusGreen)
+                ) {
+                    Text(
+                        "✅ Documentación completa y guardada — Ir al mapa",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
         }
 
         LazyColumn(
@@ -266,17 +283,27 @@ private fun DocumentRow(
                         color = SmartBusTextSecondary
                     )
 
+                    if (FaceDetectionValidator.requiresLiveFaceDetection(type)) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "🔒 Requiere detección de rostro humano en vivo (solo cámara)",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = SmartBusBlue
+                        )
+                    }
+
                     if (document != null && document.note.isNotBlank()) {
 
                         Spacer(modifier = Modifier.height(4.dp))
 
                         Text(
-                            text = "Nota del revisor: ${document.note}",
+                            text = document.note,
                             style = MaterialTheme.typography.bodySmall,
                             color = if (status == DriverDocumentStatus.REJECTED) {
                                 SmartBusRed
                             } else {
-                                SmartBusTextSecondary
+                                SmartBusGreen
                             }
                         )
                     }
@@ -294,7 +321,7 @@ private fun DocumentRow(
 
                     Spacer(modifier = Modifier.height(6.dp))
 
-                    Row {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
 
                         if (document == null) {
 
@@ -310,7 +337,11 @@ private fun DocumentRow(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    "📷 Tomar foto en tiempo real",
+                                    if (FaceDetectionValidator.requiresLiveFaceDetection(type)) {
+                                        "📷 Capturar rostro en vivo"
+                                    } else {
+                                        "📷 Subir / Capturar documento"
+                                    },
                                     fontSize = 12.sp,
                                     fontFamily = SmartBusDisplay,
                                     fontWeight = FontWeight.Bold
@@ -346,11 +377,14 @@ private fun DocumentRow(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = if (status == DriverDocumentStatus.APPROVED) "✅ Foto verificada y aprobada" else "⏳ Foto capturada (en revisión)",
+                                    text = if (status == DriverDocumentStatus.APPROVED) "✅ Verificado y guardado" else "⏳ Foto capturada",
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.SemiBold,
                                     color = statusColor(status)
                                 )
+                                TextButton(onClick = onUpload) {
+                                    Text("Actualizar", fontSize = 11.sp, color = SmartBusBlue)
+                                }
                             }
                         }
                     }

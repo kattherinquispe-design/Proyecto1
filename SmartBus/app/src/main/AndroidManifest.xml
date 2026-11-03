@@ -22,6 +22,7 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!--
         Evitar que Android suspenda el GPS por ahorro de batería. Es lo
@@ -75,6 +76,7 @@
             android:name=".location.LocationTrackingService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="location" />
 
         <!--
@@ -87,6 +89,7 @@
             android:name=".location.DriverLocationService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="location" />
 
         <!-- ================================================= -->
