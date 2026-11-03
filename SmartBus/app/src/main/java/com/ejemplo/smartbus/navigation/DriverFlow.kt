@@ -16,6 +16,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.text.font.FontWeight
+import com.ejemplo.smartbus.ui.theme.SmartBusText
+import com.ejemplo.smartbus.ui.theme.SmartBusTextSecondary
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +44,7 @@ import com.ejemplo.smartbus.data.driver.DriverGateResult
 import com.ejemplo.smartbus.data.driver.DriverRepository
 import com.ejemplo.smartbus.data.driver.DriverReviewSimulator
 import com.ejemplo.smartbus.data.driver.DriverValidators
+import com.ejemplo.smartbus.data.FirebaseRouteRepository
 import com.ejemplo.smartbus.data.RoomTransitRepository
 import com.ejemplo.smartbus.data.model.DriverDocumentType
 import com.ejemplo.smartbus.location.DriverLocationService
@@ -95,31 +103,63 @@ fun DriverFlow(
      * una de ellas: en una flota real lo hce el operador, aqui se
      * elige a mano porque no hay backend todavia.
      */
-    val transitUnits = remember(vehiclesSnapshot, routesSnapshot) {
-        vehiclesSnapshot.map { vehicle ->
-            VehicleUnit(
-                id = vehicle.id,
-                code = vehicle.code,
-                routeName = routesSnapshot
-                    .firstOrNull { it.id == vehicle.routeId }
-                    ?.let { "${it.code} - ${it.name}" }
-                    ?: "Sin ruta"
-            )
+    val firebaseRoutes by FirebaseRouteRepository.routes.collectAsState()
+
+    val transitUnits = remember(firebaseRoutes, vehiclesSnapshot, routesSnapshot) {
+        if (firebaseRoutes.isNotEmpty()) {
+            firebaseRoutes.map { route ->
+                VehicleUnit(
+                    id = route.id,
+                    code = route.code,
+                    routeName = "${route.code} - ${route.name}"
+                )
+            }
+        } else {
+            vehiclesSnapshot.map { vehicle ->
+                VehicleUnit(
+                    id = vehicle.id,
+                    code = vehicle.code,
+                    routeName = routesSnapshot
+                        .firstOrNull { it.id == vehicle.routeId }
+                        ?.let { "${it.code} - ${it.name}" }
+                        ?: "Sin ruta"
+                )
+            }
         }
     }
 
     var screen by remember { mutableStateOf(DriverScreen.HOME) }
+    var checkedCloudProfile by remember(accountId) { mutableStateOf(false) }
 
     val profile by remember(accountId) {
         repository.observeProfile(accountId)
     }.collectAsState(initial = null)
 
     /**
-     * Un conductor que todavia no ha llenado sus datos no pinta nada
-     * en el mapa: primero se registra, y despues ve su ruta.
+     * Si el conductor ya tiene correo en la sesion, primero intentamos
+     * restaurar su perfil de conductor desde la base local o Firestore
+     * para que no tenga que volver a llenar sus datos si se cerro la app.
      */
-    LaunchedEffect(profile) {
-        if (screen == DriverScreen.HOME && profile == null) {
+    LaunchedEffect(accountId, profile) {
+        val existingLocal = repository.getProfile(accountId)
+        if (existingLocal != null) {
+            checkedCloudProfile = true
+            return@LaunchedEffect
+        }
+        if (!checkedCloudProfile) {
+            val sessionEmail = com.ejemplo.smartbus.data.SessionManager.get(context)
+                .session.value?.email.orEmpty().trim()
+            if (sessionEmail.isNotBlank()) {
+                val restored = repository.loginOrRestoreByEmail(sessionEmail, accountId)
+                checkedCloudProfile = true
+                if (restored != null) {
+                    screen = DriverScreen.HOME
+                    return@LaunchedEffect
+                }
+            }
+            checkedCloudProfile = true
+        }
+        if (screen == DriverScreen.HOME && repository.getProfile(accountId) == null) {
             screen = DriverScreen.PROFILE
         }
     }
@@ -152,14 +192,15 @@ fun DriverFlow(
      * Ruta asignada al conductor: es la ruta de la unidad de transito
      * que el conductor eligio como suya. Es lo que ve en el mapa.
      */
-    val assignedRoute = remember(primaryVehicle, vehiclesSnapshot, routesSnapshot) {
+    val assignedRoute = remember(primaryVehicle, firebaseRoutes, routesSnapshot, vehiclesSnapshot) {
         val transitId = primaryVehicle?.transitVehicleId
             ?: return@remember null
 
-        val unit = vehiclesSnapshot.firstOrNull { it.id == transitId }
-            ?: return@remember null
-
-        routesSnapshot.firstOrNull { it.id == unit.routeId }
+        firebaseRoutes.firstOrNull { it.id == transitId }
+            ?: routesSnapshot.firstOrNull { it.id == transitId }
+            ?: vehiclesSnapshot.firstOrNull { it.id == transitId }?.let { unit ->
+                routesSnapshot.firstOrNull { it.id == unit.routeId }
+            }
     }
 
     val isWorking = shift?.isOnline == true
@@ -507,44 +548,58 @@ private fun DocumentsStep(
 
             AlertDialog(
                 onDismissRequest = { chooseSourceFor = null },
-                title = { Text("Agregar ${type.title.lowercase()}") },
+                title = {
+                    Text(
+                        "Captura de ${type.title}",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
                 text = {
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "La foto debe verse completa y legible.",
-                            style = MaterialTheme.typography.bodySmall
+                            text = "Por seguridad y verificación de identidad, se requiere tomar la foto en tiempo real con la cámara del dispositivo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SmartBusTextSecondary
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = type.explanation,
-                            style = MaterialTheme.typography.bodySmall
+                            text = "Detalle: " + type.explanation,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SmartBusText
                         )
                     }
                 },
                 confirmButton = {
-                    Row {
-                        TextButton(
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Button(
                             onClick = {
                                 pendingType = type
                                 chooseSourceFor = null
                                 capture()
-                            }
+                            },
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Camara")
+                            Text("📷 Tomar foto en tiempo real (Cámara)")
                         }
-                        TextButton(
+                        OutlinedButton(
                             onClick = {
                                 pendingType = type
                                 chooseSourceFor = null
                                 picker.launch("image/*")
-                            }
+                            },
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Galeria")
+                            Text("📁 Seleccionar documento / Galería")
                         }
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { chooseSourceFor = null }) {
+                    TextButton(
+                        onClick = { chooseSourceFor = null },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text("Cancelar")
                     }
                 }

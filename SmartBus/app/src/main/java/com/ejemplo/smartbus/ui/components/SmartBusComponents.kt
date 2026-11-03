@@ -40,21 +40,29 @@ fun SmartBusBlueButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
+    Box(
         modifier = modifier
-            .height(50.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = SmartBusBlue,
-            contentColor = Color.White
-        )
+            .height(50.dp)
+            .clip(CircleShape)
+            .background(SmartBusGradient)
     ) {
-        Text(
-            text = text,
-            fontWeight = FontWeight.Bold
-        )
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.fillMaxSize(),
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Transparent,
+                contentColor = Color.White,
+                disabledContainerColor = Transparent,
+                disabledContentColor = Color.White.copy(alpha = 0.6f)
+            )
+        ) {
+            Text(
+                text = text,
+                fontWeight = FontWeight.Bold
+            )
+        }
     }
 }
 
@@ -76,15 +84,24 @@ fun SmartBusPointsCard(
 
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
-            containerColor = SmartBusBlue
+            containerColor = Transparent
+        ),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 2.dp
         )
     ) {
 
-        Column(
-            modifier = Modifier.padding(18.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(SmartBusGradient)
         ) {
+
+            Column(
+                modifier = Modifier.padding(18.dp)
+            ) {
 
             Row(
                 verticalAlignment =
@@ -96,7 +113,7 @@ fun SmartBusPointsCard(
                         .size(48.dp)
                         .clip(CircleShape)
                         .background(
-                            SmartBusYellow
+                            Color.White.copy(alpha = 0.22f)
                         ),
                     contentAlignment =
                         Alignment.Center
@@ -106,7 +123,7 @@ fun SmartBusPointsCard(
                         imageVector =
                             Icons.Default.Star,
                         contentDescription = null,
-                        tint = SmartBusBlueDark
+                        tint = Color.White
                     )
                 }
 
@@ -162,6 +179,7 @@ fun SmartBusPointsCard(
                         alpha = 0.25f
                     )
             )
+            }
         }
     }
 }

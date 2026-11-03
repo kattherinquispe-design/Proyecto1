@@ -115,10 +115,14 @@ class RoomTransitRepository(
         }
 
     override fun observeVehicles(): Flow<List<Bus>> =
-        vehicleDao.observeAll().map { list -> list.map { it.toModel() } }
+        vehicleDao.observeAll().map { list ->
+            list.filter { !it.isMock && it.driverName.isNotBlank() }.map { it.toModel() }
+        }
 
     override fun observeVehiclesForRoute(routeId: Int): Flow<List<Bus>> =
-        vehicleDao.observeByRoute(routeId).map { list -> list.map { it.toModel() } }
+        vehicleDao.observeByRoute(routeId).map { list ->
+            list.filter { !it.isMock && it.driverName.isNotBlank() }.map { it.toModel() }
+        }
 
     override suspend fun getStopsOnce(): List<BusStop> =
         stopDao.getAll().map { it.toModel() }
@@ -143,7 +147,7 @@ class RoomTransitRepository(
     }
 
     override suspend fun getVehiclesOnce(): List<Bus> =
-        vehicleDao.getAll().map { it.toModel() }
+        vehicleDao.getAll().filter { !it.isMock && it.driverName.isNotBlank() }.map { it.toModel() }
 
     // =========================================================
     // DATOS REALES
@@ -212,13 +216,23 @@ class RoomTransitRepository(
     // =========================================================
 
     override suspend fun seedIfEmpty() {
+        try {
+            FirebaseRouteRepository.loadRoutes()
+        } catch (_: Exception) {
+        }
+
+        // Siempre eliminar cualquier vehiculo simulado antiguo de la base local
+        try {
+            vehicleDao.deleteSimulatedVehicles()
+        } catch (_: Exception) {
+        }
+
         if (stopDao.count() > 0 && routeDao.count() > 0) {
             return
         }
 
         val stops = BusStopRepository.stops
         val routes = RouteRepository.routes
-        val buses = BusRepository.buses
 
         stopDao.upsertAll(stops.map { it.toEntity() })
 
@@ -249,8 +263,6 @@ class RoomTransitRepository(
                 }
             }
         )
-
-        vehicleDao.upsertAll(buses.map { it.toEntity() })
 
         pruneEmptyTrail()
     }
@@ -347,7 +359,8 @@ private fun VehicleEntity.toModel() =
         isMock = isMock,
         plateCount = plateCount,
         driverName = driverName,
-        capacity = capacity
+        capacity = capacity,
+        tripType = tripType
     )
 
 private fun Bus.toEntity() =
@@ -368,7 +381,8 @@ private fun Bus.toEntity() =
         lastUpdate = lastUpdate,
         // El seed viene del simulador, no de un conductor real.
         // La app lo marca para no presentarlo como vehiculo en servicio.
-        isMock = true
+        isMock = true,
+        tripType = tripType
     )
 
 // =========================================================
@@ -387,10 +401,9 @@ fun distanceInMeters(
 }
 
 /**
- * Busca que rutas sirven a un destino concreto.
- *
- * Busca la parada mas cercana al destino y devuelve todas las rutas que
- * pasan por ella, con los buses que hay ahora mismo en cada ruta.
+ * Busca las rutas que sirven a un destino concreto en un radio de 400 metros
+ * (o las más cercanas), calculando la distancia tanto hacia el destino
+ * como desde la ubicación en tiempo real del pasajero hacia la ruta.
  */
 fun findRoutesForDestination(
     destinationLat: Double,
@@ -398,49 +411,98 @@ fun findRoutesForDestination(
     stops: List<BusStop>,
     routes: List<BusRoute>,
     buses: List<Bus>,
-    searchRadiusMeters: Float = 1200f
+    userLat: Double? = null,
+    userLng: Double? = null,
+    searchRadiusMeters: Float = 400f
 ): List<RouteCandidate> {
 
-    val nearbyStops =
-        stops
-            .map { it to distanceInMeters(destinationLat, destinationLng, it.latitude, it.longitude) }
-            .filter { it.second <= searchRadiusMeters }
-            .sortedBy { it.second }
+    val candidates = mutableListOf<RouteCandidate>()
 
-    if (nearbyStops.isEmpty()) {
-        return emptyList()
+    fun evaluateRoutes(radius: Float) {
+        for (route in routes) {
+            val allPoints = (route.subidaPoints + route.bajadaPoints).ifEmpty { route.points }
+            if (allPoints.isEmpty()) continue
+
+            // 1. Distancia desde el destino final hacia los puntos de la ruta
+            var minDestDistance = Float.MAX_VALUE
+            var closestDestPt: GeoPoint? = null
+
+            for (pt in allPoints) {
+                val d = distanceInMeters(destinationLat, destinationLng, pt.latitude, pt.longitude)
+                if (d < minDestDistance) {
+                    minDestDistance = d
+                    closestDestPt = pt
+                }
+            }
+
+            if (minDestDistance <= radius && closestDestPt != null) {
+                // 2. Distancia desde la ubicación del pasajero en tiempo real hacia la ruta
+                var minUserDistance: Float? = null
+                var closestUserPt: GeoPoint? = null
+
+                if (userLat != null && userLng != null) {
+                    var uDist = Float.MAX_VALUE
+                    for (pt in allPoints) {
+                        val d = distanceInMeters(userLat, userLng, pt.latitude, pt.longitude)
+                        if (d < uDist) {
+                            uDist = d
+                            closestUserPt = pt
+                        }
+                    }
+                    minUserDistance = uDist
+                }
+
+                val routeBuses = buses.filter { it.routeId == route.id }
+                val boardingRefPt = closestUserPt ?: closestDestPt
+                val closestBus = routeBuses.minByOrNull {
+                    distanceInMeters(it.latitude, it.longitude, boardingRefPt.latitude, boardingRefPt.longitude)
+                }
+                val closestBusDist = closestBus?.let {
+                    distanceInMeters(it.latitude, it.longitude, boardingRefPt.latitude, boardingRefPt.longitude)
+                }
+
+                // Buscar paradero formal cercano o crear punto de abordaje
+                val matchingStop = stops.minByOrNull {
+                    distanceInMeters(boardingRefPt.latitude, boardingRefPt.longitude, it.latitude, it.longitude)
+                }?.takeIf {
+                    distanceInMeters(boardingRefPt.latitude, boardingRefPt.longitude, it.latitude, it.longitude) <= 300f
+                } ?: BusStop(
+                    id = route.id,
+                    name = "Punto de abordaje • ${route.name}",
+                    latitude = boardingRefPt.latitude,
+                    longitude = boardingRefPt.longitude
+                )
+
+                candidates.add(
+                    RouteCandidate(
+                        route = route,
+                        boardingStop = matchingStop,
+                        distanceToStopMeters = minUserDistance ?: minDestDistance,
+                        buses = routeBuses,
+                        closestBus = closestBus,
+                        closestBusDistanceMeters = closestBusDist,
+                        distanceToUserMeters = minUserDistance,
+                        distanceToDestinationMeters = minDestDistance
+                    )
+                )
+            }
+        }
     }
 
-    val boardingStopId = nearbyStops.first().first.id
-    val boardingStop = nearbyStops.first().first
+    // Buscamos estrictamente en el radio de 400 m solicitado
+    evaluateRoutes(searchRadiusMeters)
 
-    return routes
-        .filter { boardingStopId in it.stopIds }
-        .map { route ->
+    // Si ninguna ruta pasa exactamente a 400 m, ampliamos ligeramente a 700 m como tolerancia
+    if (candidates.isEmpty()) {
+        evaluateRoutes(700f)
+    }
 
-            val routeBuses =
-                buses.filter { it.routeId == route.id }
-
-            val closest =
-                routeBuses
-                    .map {
-                        it to distanceInMeters(
-                            it.latitude,
-                            it.longitude,
-                            boardingStop.latitude,
-                            boardingStop.longitude
-                        )
-                    }
-                    .minByOrNull { it.second }
-
-            RouteCandidate(
-                route = route,
-                boardingStop = boardingStop,
-                distanceToStopMeters = nearbyStops.first().second,
-                buses = routeBuses,
-                closestBus = closest?.first,
-                closestBusDistanceMeters = closest?.second
-            )
-        }
-        .sortedBy { it.closestBusDistanceMeters ?: Float.MAX_VALUE }
+    // Ordenar: primero las que dejan más cerca del destino (menor distancia al destino),
+    // y luego por menor distancia para caminar desde la ubicación actual
+    return candidates
+        .distinctBy { it.route.id }
+        .sortedWith(
+            compareBy<RouteCandidate> { it.distanceToDestinationMeters ?: Float.MAX_VALUE }
+                .thenBy { it.distanceToUserMeters ?: Float.MAX_VALUE }
+        )
 }

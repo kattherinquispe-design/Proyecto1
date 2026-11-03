@@ -27,5 +27,6 @@ data class Bus(
      * real. La interfaz lo dice, para no vender una demo como si
      * fuera un vehiculo en servicio de verdad.
      */
-    val isMock: Boolean = true
+    val isMock: Boolean = true,
+    val tripType: String = "SUBIDA"
 )

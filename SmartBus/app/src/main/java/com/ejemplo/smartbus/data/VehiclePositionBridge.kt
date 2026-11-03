@@ -153,7 +153,7 @@ object VehiclePositionSync {
         val bridge = VehiclePositionBridge(
             transitRepository = transitRepository,
             source = SimulatedVehicleSource(),
-            useSimulatedFeed = true
+            useSimulatedFeed = false
         )
 
         scope.launch {

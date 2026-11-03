@@ -2,6 +2,8 @@ package com.ejemplo.smartbus.data
 
 import android.content.Context
 import com.ejemplo.smartbus.data.model.UserRole
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -134,6 +136,20 @@ class SessionManager(context: Context) {
         val current = _session.value ?: return
 
         persist(current.copy(role = role))
+
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val uid = current.userId.ifBlank { current.email.replace("@", "_").replace(".", "_") }
+            val roleStr = if (role == UserRole.DRIVER) "conductor" else "pasajero"
+            val updateData = mapOf(
+                "rol" to roleStr,
+                "role" to role.name,
+                "updatedAt" to System.currentTimeMillis()
+            )
+            firestore.collection("usuarios").document(uid).update(updateData)
+            firestore.collection("users").document(uid).delete()
+        } catch (_: Exception) {
+        }
     }
 
     fun toggleRole() {
@@ -154,6 +170,25 @@ class SessionManager(context: Context) {
         idToken: String
     ): SmartBusSession {
 
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val uid = userId.ifBlank { email.replace("@", "_").replace(".", "_") }
+            val now = System.currentTimeMillis()
+            val data = hashMapOf(
+                "uid" to uid,
+                "nombre" to name.ifBlank { email.substringBefore("@") },
+                "correo" to email,
+                "photoUri" to photoUri,
+                "rol" to "pasajero",
+                "proveedor" to "GOOGLE",
+                "activo" to true,
+                "updatedAt" to now
+            )
+            firestore.collection("usuarios").document(uid).set(data, com.google.firebase.firestore.SetOptions.merge())
+            firestore.collection("users").document(uid).delete()
+        } catch (_: Exception) {
+        }
+
         val session = SmartBusSession(
             userId = userId.ifBlank { email },
             name = name.ifBlank { email.substringBefore("@") },
@@ -168,12 +203,30 @@ class SessionManager(context: Context) {
     }
 
     /**
-     * Entra con correo y contrasena guardados en el telefono.
-     * En produccion esto se sustituye por la API del operador.
+     * Entra/registro con correo - guarda en Firebase Auth y Firestore (coleccion unica 'usuarios')
      */
     fun signInWithEmail(email: String, name: String): SmartBusSession {
 
         val cleanEmail = email.trim().lowercase()
+
+        try {
+            val auth = FirebaseAuth.getInstance()
+            val firestore = FirebaseFirestore.getInstance()
+            val uid = auth.currentUser?.uid ?: cleanEmail.replace("@", "_").replace(".", "_")
+            val now = System.currentTimeMillis()
+            val data = hashMapOf(
+                "uid" to uid,
+                "nombre" to name.ifBlank { cleanEmail.substringBefore("@") },
+                "correo" to cleanEmail,
+                "rol" to "pasajero",
+                "proveedor" to "EMAIL",
+                "activo" to true,
+                "updatedAt" to now
+            )
+            firestore.collection("usuarios").document(uid).set(data, com.google.firebase.firestore.SetOptions.merge())
+            firestore.collection("users").document(uid).delete()
+        } catch (_: Exception) {
+        }
 
         val session = SmartBusSession(
             userId = cleanEmail,

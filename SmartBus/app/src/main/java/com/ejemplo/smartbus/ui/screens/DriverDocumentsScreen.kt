@@ -41,12 +41,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ejemplo.smartbus.data.driver.DriverRequirements
 import com.ejemplo.smartbus.data.driver.DriverStep
 import com.ejemplo.smartbus.data.model.DriverDocument
 import com.ejemplo.smartbus.data.model.DriverDocumentStatus
 import com.ejemplo.smartbus.data.model.DriverDocumentType
 import com.ejemplo.smartbus.ui.theme.SmartBusBackground
+import com.ejemplo.smartbus.ui.theme.AppPalette
+import com.ejemplo.smartbus.ui.theme.SmartBusDisplay
+import com.ejemplo.smartbus.ui.theme.SmartBusBody
+import androidx.compose.material3.ButtonDefaults
 import com.ejemplo.smartbus.ui.theme.SmartBusBlue
 import com.ejemplo.smartbus.ui.theme.SmartBusDivider
 import com.ejemplo.smartbus.ui.theme.SmartBusGreen
@@ -293,33 +298,60 @@ private fun DocumentRow(
 
                         if (document == null) {
 
-                            TextButton(onClick = onUpload) {
+                            Button(
+                                onClick = onUpload,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = AppPalette.primary)
+                            ) {
                                 Icon(
                                     Icons.Default.AddAPhoto,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Subir")
+                                Text(
+                                    "📷 Tomar foto en tiempo real",
+                                    fontSize = 12.sp,
+                                    fontFamily = SmartBusDisplay,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
 
                         } else if (status == DriverDocumentStatus.REJECTED) {
 
-                            TextButton(onClick = onUpload) {
-                                Text("Volver a subir")
+                            Button(
+                                onClick = onUpload,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = AppPalette.primary)
+                            ) {
+                                Text("Volver a capturar foto", fontSize = 12.sp)
                             }
 
+                            Spacer(modifier = Modifier.width(8.dp))
+
                             TextButton(onClick = onDelete) {
-                                Text("Quitar")
+                                Text("Quitar", color = SmartBusRed, fontSize = 12.sp)
                             }
 
                         } else {
 
-                            Text(
-                                text = status.label,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = statusColor(status)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = SmartBusGreen,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = if (status == DriverDocumentStatus.APPROVED) "✅ Foto verificada y aprobada" else "⏳ Foto capturada (en revisión)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = statusColor(status)
+                                )
+                            }
                         }
                     }
                 }

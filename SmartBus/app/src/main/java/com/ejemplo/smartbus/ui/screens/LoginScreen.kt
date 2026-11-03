@@ -2,6 +2,7 @@ package com.ejemplo.smartbus.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
@@ -11,10 +12,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ejemplo.smartbus.ui.theme.*
 
 @Composable
@@ -54,25 +58,22 @@ fun LoginScreen(
         )
 
         Text(
-            text = "Ruta",
-            style =
-                MaterialTheme.typography
-                    .displayLarge
+            text = "Tu ruta, tus puntos, tus recompensas",
+            style = MaterialTheme.typography.labelLarge,
+            color = SmartBusTextSecondary
+        )
+
+        Spacer(
+            modifier =
+                Modifier.height(10.dp)
         )
 
         Text(
-            text = "SmartBus",
-            style =
-                MaterialTheme.typography
-                    .headlineLarge,
-            color = SmartBusBlueDark
-        )
-
-        Text(
-            text =
-                "Tu ruta, tus puntos, tus recompensas",
-            color =
-                SmartBusTextSecondary
+            text = "MISTIGO",
+            style = MaterialTheme.typography.displayLarge.copy(
+                letterSpacing = 3.sp
+            ),
+            color = SmartBusBlue
         )
 
         Spacer(
@@ -207,24 +208,34 @@ fun LoginScreen(
                     Modifier.height(20.dp)
             )
 
-            Button(
-                onClick = {
-                    onLogin(
-                        email,
-                        password
-                    )
-                },
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                shape =
-                    RoundedCornerShape(14.dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .clip(CircleShape)
+                    .background(SmartBusGradient)
             ) {
 
-                Text(
-                    text = "Iniciar sesión"
-                )
+                Button(
+                    onClick = {
+                        onLogin(
+                            email,
+                            password
+                        )
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = Color.White
+                    )
+                ) {
+
+                    Text(
+                        text = "Iniciar sesión",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             Spacer(

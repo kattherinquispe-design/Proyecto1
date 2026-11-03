@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.SmartBus" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.SmartBus" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Fondo claro oficial de MistiGo para eliminar la pantalla negra al iniciar la app -->
+        <item name="android:windowBackground">@color/smartbus_background</item>
+        <item name="android:colorBackground">@color/smartbus_background</item>
+        <item name="android:statusBarColor">@color/smartbus_background</item>
+        <item name="android:navigationBarColor">@color/smartbus_navy_bar</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

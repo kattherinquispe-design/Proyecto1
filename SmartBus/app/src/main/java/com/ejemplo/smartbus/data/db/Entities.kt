@@ -108,7 +108,8 @@ data class VehicleEntity(
     val driverName: String = "",
 
     /** Puestos del vehiculo, 0 si no se sabe. */
-    val capacity: Int = 0
+    val capacity: Int = 0,
+    val tripType: String = "SUBIDA"
 )
 
 /**
@@ -143,6 +144,7 @@ data class VehiclePositionEntity(
 )
 data class DriverProfileEntity(
     @PrimaryKey val accountId: String,
+    val email: String = "",
     val fullName: String,
     val documentId: String,
     val documentType: String,

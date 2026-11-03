@@ -1,7 +1,11 @@
 package com.ejemplo.smartbus.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.ejemplo.smartbus.data.model.PointTransaction
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -9,22 +13,51 @@ class PointsRepository(context: Context) {
 
     private val appContext = context.applicationContext
 
-    private var preferences =
+    private var explicitAccountId: String? = null
+
+    private var preferences: SharedPreferences =
         appContext.getSharedPreferences(
-            preferencesName(null),
+            preferencesName(SessionManager.get(appContext).session.value?.storageKey),
             Context.MODE_PRIVATE
         )
+
+    /**
+     * Sincroniza siempre las preferencias con la cuenta activa de
+     * SessionManager para que tanto el servicio en segundo plano
+     * (LocationTrackingService) como la UI lean y escriban exactamente
+     * el mismo saldo de puntos.
+     */
+    private fun syncActivePrefs(): SharedPreferences {
+        val sessionKey = SessionManager.get(appContext).session.value?.storageKey
+        val effectiveKey = explicitAccountId ?: sessionKey
+        val targetName = preferencesName(effectiveKey)
+        val targetPrefs = appContext.getSharedPreferences(targetName, Context.MODE_PRIVATE)
+
+        // Si el usuario tiene cuenta activa y habia puntos acumulados en el archivo anonimo,
+        // migrarlos automaticamente para que no se pierdan.
+        if (!effectiveKey.isNullOrBlank()) {
+            val anonPrefs = appContext.getSharedPreferences("smartbus_points", Context.MODE_PRIVATE)
+            val anonPoints = anonPrefs.getInt(KEY_POINTS, 0)
+            if (anonPoints > 0) {
+                val currentAccountPoints = targetPrefs.getInt(KEY_POINTS, 0)
+                val merged = currentAccountPoints + anonPoints
+                targetPrefs.edit().putInt(KEY_POINTS, merged).apply()
+                anonPrefs.edit().putInt(KEY_POINTS, 0).apply()
+            }
+        }
+
+        preferences = targetPrefs
+        return targetPrefs
+    }
 
     /**
      * Los puntos son por cuenta. Antes eran globales: dos personas que
      * usaban el telefono compartian el mismo saldo.
      */
     fun useAccount(accountId: String?) {
-        preferences =
-            appContext.getSharedPreferences(
-                preferencesName(accountId),
-                Context.MODE_PRIVATE
-            )
+        explicitAccountId = accountId
+        syncActivePrefs()
+        syncPointsFromCloudIfNeeded()
     }
 
     private fun preferencesName(accountId: String?): String =
@@ -34,6 +67,79 @@ class PointsRepository(context: Context) {
             "smartbus_points_$accountId"
         }
 
+    /**
+     * Sincroniza el saldo de puntos actual hacia la coleccion 'usuarios' de Firebase Firestore.
+     */
+    private fun syncPointsToFirestore(totalPoints: Int) {
+        try {
+            val session = SessionManager.get(appContext).session.value
+            val authUid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+            val email = session?.email.orEmpty().trim().lowercase()
+            val uid = when {
+                !authUid.isNullOrBlank() -> authUid
+                email.isNotBlank() -> email.replace("@", "_").replace(".", "_")
+                session != null && session.userId.isNotBlank() -> session.userId
+                else -> return
+            }
+
+            val data = hashMapOf<String, Any>(
+                "puntos" to totalPoints,
+                "updatedAt" to System.currentTimeMillis()
+            )
+            if (email.isNotBlank()) {
+                data["correo"] = email
+            }
+            if (session != null && session.name.isNotBlank()) {
+                data["nombre"] = session.name
+            }
+
+            FirebaseFirestore.getInstance()
+                .collection("usuarios")
+                .document(uid)
+                .set(data, SetOptions.merge())
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Recupera los puntos guardados en Firestore ('usuarios') cuando el saldo local
+     * aun no fue inicializado (por ejemplo al iniciar sesion en un telefono limpio).
+     */
+    fun syncPointsFromCloudIfNeeded() {
+        try {
+            val session = SessionManager.get(appContext).session.value ?: return
+            if (session.isGuest) return
+            val authUid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+            val email = session.email.trim().lowercase()
+            val uid = when {
+                !authUid.isNullOrBlank() -> authUid
+                email.isNotBlank() -> email.replace("@", "_").replace(".", "_")
+                session.userId.isNotBlank() -> session.userId
+                else -> return
+            }
+
+            FirebaseFirestore.getInstance()
+                .collection("usuarios")
+                .document(uid)
+                .get()
+                .addOnSuccessListener { doc ->
+                    if (doc != null && doc.exists()) {
+                        val cloudPoints = (doc.getLong("puntos") ?: doc.getLong("points"))?.toInt() ?: return@addOnSuccessListener
+                        val prefs = syncActivePrefs()
+                        val localPoints = prefs.getInt(KEY_POINTS, 0)
+                        val hasLocalHistory = !prefs.getString(KEY_HISTORY, null).isNullOrBlank()
+                        if (localPoints == 0 && !hasLocalHistory && cloudPoints > 0) {
+                            prefs.edit().putInt(KEY_POINTS, cloudPoints).apply()
+                            PointsEventManager.notifyPointsAdded(cloudPoints)
+                        } else if (localPoints > 0 && cloudPoints != localPoints) {
+                            syncPointsToFirestore(localPoints)
+                        }
+                    }
+                }
+        } catch (_: Exception) {
+        }
+    }
+
     companion object {
         private const val KEY_POINTS = "total_points"
         private const val KEY_HISTORY = "points_history"
@@ -41,47 +147,136 @@ class PointsRepository(context: Context) {
     }
 
     /**
-     * Devuelve el codigo de canje de una recompensa ya utilizada.
-     * Sirve para impedir que un mismo canje se reutilice.
+     * Devuelve el codigo de canje activo de una recompensa.
+     * Si el voucher anterior ya fue marcado como usado, permite volver a canjear.
      */
     fun getRedemptionCode(rewardId: Int): String? {
-        val json = preferences.getString(KEY_REDEEMED, null) ?: return null
+        val prefs = syncActivePrefs()
+        val json = prefs.getString(KEY_REDEEMED, null) ?: return null
         return try {
             val obj = JSONObject(json)
-            if (obj.has(rewardId.toString())) obj.getString(rewardId.toString()) else null
+            if (!obj.has(rewardId.toString())) return null
+            val value = obj.get(rewardId.toString())
+            if (value is JSONObject) {
+                if (value.optBoolean("isUsed", false)) null else value.optString("code")
+            } else {
+                value.toString()
+            }
         } catch (_: Exception) {
             null
         }
     }
 
     /**
-     * True si la recompensa ya fue canjeada alguna vez.
+     * True si la recompensa tiene un canje activo pendiente de usar.
      */
     fun isRewardRedeemed(rewardId: Int): Boolean = getRedemptionCode(rewardId) != null
 
     /**
      * Marca una recompensa como canjeada para bloquear su reutilizacion.
      */
-    private fun markRewardRedeemed(rewardId: Int, code: String) {
+    private fun markRewardRedeemed(
+        rewardId: Int,
+        code: String,
+        isUsed: Boolean = false,
+        usedAt: Long? = null,
+        redeemedAt: Long = System.currentTimeMillis()
+    ) {
+        val prefs = syncActivePrefs()
         val obj = try {
-            JSONObject(preferences.getString(KEY_REDEEMED, null) ?: "{}")
+            JSONObject(prefs.getString(KEY_REDEEMED, null) ?: "{}")
         } catch (_: Exception) {
             JSONObject()
         }
-        obj.put(rewardId.toString(), code)
-        preferences.edit().putString(KEY_REDEEMED, obj.toString()).apply()
+        val entry = JSONObject().apply {
+            put("code", code)
+            put("isUsed", isUsed)
+            if (usedAt != null) put("usedAt", usedAt)
+            put("redeemedAt", redeemedAt)
+        }
+        obj.put(rewardId.toString(), entry)
+        prefs.edit().putString(KEY_REDEEMED, obj.toString()).commit()
     }
 
     /**
-     * Devuelve los ids de recompensas ya canjeadas.
+     * Confirma y consume un canje (1 solo uso). Una vez confirmado, no puede volver a usarse.
+     */
+    fun markRedemptionAsUsed(code: String): Boolean {
+        val prefs = syncActivePrefs()
+        val json = prefs.getString(KEY_REDEEMED, null) ?: return false
+        return try {
+            val obj = JSONObject(json)
+            var matchedKey: String? = null
+            var matchedObj: JSONObject? = null
+
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = obj.get(key)
+                if (value is JSONObject && value.optString("code") == code) {
+                    matchedKey = key
+                    matchedObj = value
+                    break
+                } else if (value.toString() == code) {
+                    matchedKey = key
+                    matchedObj = JSONObject().apply {
+                        put("code", code)
+                        put("redeemedAt", System.currentTimeMillis())
+                    }
+                    break
+                }
+            }
+
+            if (matchedKey != null && matchedObj != null) {
+                if (matchedObj.optBoolean("isUsed", false)) {
+                    return false // Ya fue usado previamente
+                }
+                val now = System.currentTimeMillis()
+                matchedObj.put("isUsed", true)
+                matchedObj.put("usedAt", now)
+                obj.put(matchedKey, matchedObj)
+                prefs.edit().putString(KEY_REDEEMED, obj.toString()).commit()
+
+                // Sincronizar en Firebase Firestore
+                try {
+                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    firestore.collection("canjes").document(code).update(
+                        mapOf(
+                            "status" to "USADO",
+                            "usedAt" to now
+                        )
+                    )
+                } catch (_: Exception) {
+                }
+                true
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Devuelve los ids de recompensas con canje activo.
      */
     fun getRedeemedRewardIds(): Set<Int> {
-        val json = preferences.getString(KEY_REDEEMED, null) ?: return emptySet()
+        val prefs = syncActivePrefs()
+        val json = prefs.getString(KEY_REDEEMED, null) ?: return emptySet()
         return try {
             val obj = JSONObject(json)
             val ids = mutableSetOf<Int>()
-            obj.keys().forEach { key -> ids.add(key.toIntOrNull() ?: 0) }
-            ids.filter { it != 0 }.toSet()
+            obj.keys().forEach { key ->
+                val id = key.toIntOrNull() ?: 0
+                if (id != 0) {
+                    val value = obj.get(key)
+                    val isUsed = value is JSONObject && value.optBoolean("isUsed", false)
+                    if (!isUsed) {
+                        ids.add(id)
+                    }
+                }
+            }
+            ids
         } catch (_: Exception) {
             emptySet()
         }
@@ -89,10 +284,11 @@ class PointsRepository(context: Context) {
 
     /**
      * Devuelve el detalle de las recompensas ya canjeadas:
-     * id, nombre, costo y codigo de canje.
+     * id, nombre, costo, codigo de canje y si ya fue consumido.
      */
     fun getRedeemedRewards(): List<RedeemedReward> {
-        val json = preferences.getString(KEY_REDEEMED, null) ?: return emptyList()
+        val prefs = syncActivePrefs()
+        val json = prefs.getString(KEY_REDEEMED, null) ?: return emptyList()
         return try {
             val obj = JSONObject(json)
             val result = mutableListOf<RedeemedReward>()
@@ -100,16 +296,37 @@ class PointsRepository(context: Context) {
                 val id = key.toIntOrNull() ?: return@forEach
                 if (id == 0) return@forEach
                 val reward = RewardsCatalog.byId(id)
+                val value = obj.get(key)
+                val code: String
+                val isUsed: Boolean
+                val usedAt: Long?
+                val redeemedAt: Long
+
+                if (value is JSONObject) {
+                    code = value.optString("code")
+                    isUsed = value.optBoolean("isUsed", false)
+                    usedAt = if (value.has("usedAt") && !value.isNull("usedAt")) value.getLong("usedAt") else null
+                    redeemedAt = value.optLong("redeemedAt", System.currentTimeMillis())
+                } else {
+                    code = value.toString()
+                    isUsed = false
+                    usedAt = null
+                    redeemedAt = System.currentTimeMillis()
+                }
+
                 result.add(
                     RedeemedReward(
                         id = id,
                         name = reward?.name ?: "Recompensa $id",
                         points = reward?.points ?: 0,
-                        code = obj.optString(key)
+                        code = code,
+                        isUsed = isUsed,
+                        usedAt = usedAt,
+                        redeemedAt = redeemedAt
                     )
                 )
             }
-            result.sortedBy { it.id }
+            result.sortedByDescending { it.redeemedAt }
         } catch (_: Exception) {
             emptyList()
         }
@@ -121,7 +338,8 @@ class PointsRepository(context: Context) {
     fun generateRedemptionCode(rewardId: Int): String {
         var code: String
         do {
-            code = "SB-${rewardId}-${System.currentTimeMillis().toString().takeLast(6)}"
+            val randomSuffix = (1000..9999).random()
+            code = "MISTIGO-CANJE-$rewardId-" + System.currentTimeMillis().toString().takeLast(4) + "-" + randomSuffix
         } while (isCodeUsed(code))
         return code
     }
@@ -131,7 +349,9 @@ class PointsRepository(context: Context) {
         return try {
             val obj = JSONObject(json)
             obj.keys().forEach { key ->
-                if (obj.optString(key) == code) return true
+                val value = obj.get(key)
+                val existingCode = if (value is JSONObject) value.optString("code") else value.toString()
+                if (existingCode == code) return true
             }
             false
         } catch (_: Exception) {
@@ -157,6 +377,24 @@ class PointsRepository(context: Context) {
         if (!charged) return null
 
         markRewardRedeemed(rewardId, code)
+
+        // Registrar en Firebase Firestore para auditoría y validación en la nube
+        try {
+            val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            firestore.collection("canjes").document(code).set(
+                mapOf(
+                    "code" to code,
+                    "rewardId" to rewardId,
+                    "rewardName" to rewardName,
+                    "pointsCost" to points,
+                    "status" to "ACTIVO",
+                    "redeemedAt" to System.currentTimeMillis(),
+                    "usedAt" to null
+                )
+            )
+        } catch (_: Exception) {
+        }
+
         return code
     }
 
@@ -164,30 +402,31 @@ class PointsRepository(context: Context) {
      * Devuelve el total actual de puntos.
      */
     fun getPoints(): Int {
-        return preferences.getInt(KEY_POINTS, 0)
+        return syncActivePrefs().getInt(KEY_POINTS, 0)
     }
 
     /**
-     * Agrega puntos después de validar un abordaje.
+     * Agrega puntos después de validar un abordaje (por defecto 20 puntos por viaje en paradero).
      */
     fun addBoardingPoints(
         stopId: Int = 0,
         stopName: String = "",
         routeId: Int? = null,
         busId: Int? = null,
-        points: Int = 50,
+        points: Int = 20,
         reason: String = "Abordaje validado",
         evidence: String? = null
     ) {
 
-        val currentPoints = getPoints()
+        val prefs = syncActivePrefs()
+        val currentPoints = prefs.getInt(KEY_POINTS, 0)
 
         val newTotal = currentPoints + points
 
-        preferences
+        prefs
             .edit()
             .putInt(KEY_POINTS, newTotal)
-            .apply()
+            .commit()
 
         addTransaction(
             points = points,
@@ -199,11 +438,12 @@ class PointsRepository(context: Context) {
             evidence = evidence
         )
 
+        syncPointsToFirestore(newTotal)
         PointsEventManager.notifyPointsAdded(newTotal)
     }
 
     /**
-     * Resta puntos cuando el usuario canjea una recompensa.
+     * Resta puntos inmediatamente cuando el usuario canjea una recompensa.
      */
     fun redeemPoints(
         points: Int,
@@ -212,18 +452,19 @@ class PointsRepository(context: Context) {
         redemptionCode: String? = null
     ): Boolean {
 
-        val currentPoints = getPoints()
+        val prefs = syncActivePrefs()
+        val currentPoints = prefs.getInt(KEY_POINTS, 0)
 
         if (currentPoints < points) {
             return false
         }
 
-        val newTotal = currentPoints - points
+        val newTotal = (currentPoints - points).coerceAtLeast(0)
 
-        preferences
+        prefs
             .edit()
             .putInt(KEY_POINTS, newTotal)
-            .apply()
+            .commit()
 
         addTransaction(
             points = -points,
@@ -232,6 +473,9 @@ class PointsRepository(context: Context) {
             reason = if (redemptionCode.isNullOrEmpty()) "Canje de recompensa" else "Canje de recompensa (Código: $redemptionCode)",
             evidence = redemptionCode
         )
+
+        syncPointsToFirestore(newTotal)
+        PointsEventManager.notifyPointsAdded(newTotal)
 
         return true
     }
@@ -284,13 +528,14 @@ class PointsRepository(context: Context) {
             jsonArray.put(jsonObject)
         }
 
-        preferences
+        val prefs = syncActivePrefs()
+        prefs
             .edit()
             .putString(
                 KEY_HISTORY,
                 jsonArray.toString()
             )
-            .apply()
+            .commit()
     }
 
     /**
@@ -298,8 +543,9 @@ class PointsRepository(context: Context) {
      */
     fun getHistory(): List<PointTransaction> {
 
+        val prefs = syncActivePrefs()
         val jsonString =
-            preferences.getString(
+            prefs.getString(
                 KEY_HISTORY,
                 null
             )
@@ -347,10 +593,12 @@ class PointsRepository(context: Context) {
      */
     fun clearPoints() {
 
-        preferences
+        syncActivePrefs()
             .edit()
             .clear()
-            .apply()
+            .commit()
+        syncPointsToFirestore(0)
+        PointsEventManager.notifyPointsAdded(0)
     }
 }
 
@@ -361,5 +609,8 @@ data class RedeemedReward(
     val id: Int,
     val name: String,
     val points: Int,
-    val code: String
+    val code: String,
+    val isUsed: Boolean = false,
+    val usedAt: Long? = null,
+    val redeemedAt: Long = System.currentTimeMillis()
 )

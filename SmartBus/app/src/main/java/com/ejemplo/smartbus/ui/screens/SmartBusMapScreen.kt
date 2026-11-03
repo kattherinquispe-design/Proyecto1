@@ -72,6 +72,9 @@ import com.ejemplo.smartbus.data.model.BusStop
 import com.ejemplo.smartbus.location.BusStopDetector
 import com.ejemplo.smartbus.location.FixQuality
 import com.ejemplo.smartbus.location.LocationFixEvaluator
+import com.ejemplo.smartbus.ui.theme.AppPalette
+import com.ejemplo.smartbus.ui.theme.SmartBusDisplay
+import com.google.android.gms.maps.model.LatLngBounds
 import com.ejemplo.smartbus.ui.theme.SmartBusBlue
 import com.ejemplo.smartbus.ui.theme.SmartBusDivider
 import com.ejemplo.smartbus.ui.theme.SmartBusGreen
@@ -88,6 +91,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.LocationSettingsRequest
 import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
@@ -146,15 +150,63 @@ fun SmartBusMapScreen(
     var hasMovedManually by remember { mutableStateOf(false) }
     var hasCenteredOnce by remember { mutableStateOf(false) }
     var isProgrammaticMove by remember { mutableStateOf(false) }
+    var tripFilter by remember { mutableStateOf<String>("SUBIDA") }
+    var locationFrozen by remember { mutableStateOf(false) }
+    var showFarBusNotice by remember { mutableStateOf(false) }
+    var farBusDistance by remember { mutableStateOf<Float?>(null) }
 
     /**
-     * Si la navegacion ya trae los vehiculos de la base de datos, se
-     * usan esos. Si no, se recurre al repositorio en vivo para que el
-     * mapa siga funcionando aislado.
+     * Se combinan unicamente los buses reales en vivo desde Firestore
+     * ('vehiculos_en_vivo') y los de conductores activos en Room, sin
+     * ninguna unidad simulada para no confundir al pasajero.
      */
     val liveBuses by BusLiveRepository.buses.collectAsState(initial = emptyList<Bus>())
 
-    val buses = vehicles ?: liveBuses
+    val rawBuses = remember(vehicles, liveBuses) {
+        (liveBuses + (vehicles.orEmpty()))
+            .filter { !it.isMock }
+            .distinctBy { it.id }
+    }
+    val buses = rawBuses.filter { bus ->
+        val routeOk = selectedRoute?.let {
+            bus.routeId == it.id || bus.code.contains(it.code, ignoreCase = true)
+        } ?: true
+        val filterOk = bus.tripType.equals(tripFilter, ignoreCase = true)
+        routeOk && filterOk
+    }
+
+    // Ruta activa para dibujar en el mapa: la seleccionada o la primera disponible
+    val currentRoute = selectedRoute ?: if (tripFilter == "BAJADA") {
+        routes.firstOrNull { it.bajadaPoints.isNotEmpty() }
+    } else {
+        routes.firstOrNull { it.subidaPoints.isNotEmpty() }
+    }
+
+    val pointsToShow = when (tripFilter) {
+        "BAJADA" -> currentRoute?.bajadaPoints
+            ?.ifEmpty { currentRoute.points }
+            ?.ifEmpty { currentRoute.subidaPoints }
+        "SUBIDA" -> currentRoute?.subidaPoints
+            ?.ifEmpty { currentRoute.points }
+            ?.ifEmpty { currentRoute.bajadaPoints }
+        else -> currentRoute?.points
+            ?.ifEmpty { currentRoute.subidaPoints }
+            ?.ifEmpty { currentRoute.bajadaPoints }
+    } ?: emptyList()
+
+    // Sincronizar sentido al cambiar de ruta
+    LaunchedEffect(selectedRoute) {
+        if (selectedRoute != null) {
+            if (selectedRoute.tripType.equals("BAJADA", ignoreCase = true)) {
+                tripFilter = "BAJADA"
+            } else if (selectedRoute.tripType.equals("SUBIDA", ignoreCase = true)) {
+                tripFilter = "SUBIDA"
+            }
+        }
+    }
+
+
+
 
     LaunchedEffect(userLocation) {
         userLocation?.let { onUserLocationChange(it) }
@@ -331,6 +383,29 @@ fun SmartBusMapScreen(
         )
     }
 
+    LaunchedEffect(pointsToShow, tripFilter) {
+        if (pointsToShow.isNotEmpty()) {
+            isProgrammaticMove = true
+            isFollowingUser = false
+            hasMovedManually = false
+            if (pointsToShow.size >= 2) {
+                try {
+                    val boundsBuilder = com.google.android.gms.maps.model.LatLngBounds.builder()
+                    pointsToShow.forEach { boundsBuilder.include(LatLng(it.latitude, it.longitude)) }
+                    val bounds = boundsBuilder.build()
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(bounds, 120))
+                } catch (_: Exception) {
+                    val mid = pointsToShow[pointsToShow.size / 2]
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(LatLng(mid.latitude, mid.longitude), 14f))
+                }
+            } else {
+                val first = pointsToShow.first()
+                cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(LatLng(first.latitude, first.longitude), 15f))
+            }
+            isProgrammaticMove = false
+        }
+    }
+
     var activeCallback: LocationCallback? by remember { mutableStateOf(null) }
 
     /**
@@ -379,6 +454,12 @@ fun SmartBusMapScreen(
         nearestStop = closest
         nearestDistance =
             if (closestDistance != Float.MAX_VALUE) closestDistance else null
+
+        val matchedStop = closest
+        if (matchedStop != null && closestDistance <= matchedStop.radiusMeters) {
+            com.ejemplo.smartbus.data.SmartBusNotificationManager(context)
+                .showArrivalAtStop(matchedStop.name)
+        }
     }
 
     /**
@@ -468,13 +549,13 @@ fun SmartBusMapScreen(
     }
 
 
-    LaunchedEffect(destination) {
-        if (destination != null) {
+    LaunchedEffect(destination, selectedRoute) {
+        if (destination != null && selectedRoute == null) {
             hasMovedManually = false
             isFollowingUser = false
             isProgrammaticMove = true
             cameraPositionState.animate(
-                CameraUpdateFactory.newLatLngZoom(destination, 17f),
+                CameraUpdateFactory.newLatLngZoom(destination, 16f),
                 700
             )
             isProgrammaticMove = false
@@ -564,35 +645,114 @@ fun SmartBusMapScreen(
             ),
             contentPadding = PaddingValues(bottom = 96.dp)
         ) {
-            selectedRoute?.points?.takeIf { it.size >= 2 }?.let { points ->
+            if (pointsToShow.size >= 2) {
+                val routeLatLngs = pointsToShow.map { LatLng(it.latitude, it.longitude) }
+                val routeBlueColor = Color(0xFF2563EB)
+                val haloColor = if (tripFilter == "BAJADA") Color(0x440284C7) else Color(0x442563EB)
+                val coreColor = if (tripFilter == "BAJADA") Color(0xFF0284C7) else routeBlueColor
+
+                // 1. Halo exterior azul translúcido (sombra estética de alto contraste)
                 Polyline(
-                    points = points.map { LatLng(it.latitude, it.longitude) },
-                    color = SmartBusBlue,
-                    width = 7f
+                    points = routeLatLngs,
+                    color = haloColor,
+                    width = 14f
                 )
+
+                // 2. Línea principal azul sólida estética
+                Polyline(
+                    points = routeLatLngs,
+                    color = coreColor,
+                    width = 7.5f
+                )
+
+                routeLatLngs.firstOrNull()?.let { start ->
+                    Marker(
+                        state = MarkerState(position = start),
+                        title = "Inicio (" + (if (tripFilter == "BAJADA") "Bajada" else "Subida") + "): " + (currentRoute?.origin ?: "Origen"),
+                        snippet = currentRoute?.name,
+                        icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE)
+                    )
+                }
+
+                routeLatLngs.lastOrNull()?.let { end ->
+                    Marker(
+                        state = MarkerState(position = end),
+                        title = "Destino (" + (if (tripFilter == "BAJADA") "Bajada" else "Subida") + "): " + (currentRoute?.destination ?: "Destino"),
+                        snippet = currentRoute?.name,
+                        icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED)
+                    )
+                }
             }
 
-            stops.forEach { stop ->
+            // Solo mostramos los paraderos oficiales de la ruta activa para evitar interferencias
+            val relevantStops = remember(stops, currentRoute, pointsToShow) {
+                if (currentRoute != null) {
+                    if (currentRoute.stopIds.isNotEmpty()) {
+                        stops.filter { it.id in currentRoute.stopIds }
+                    } else if (pointsToShow.isNotEmpty()) {
+                        stops.filter { stop ->
+                            pointsToShow.any { pt ->
+                                val d = FloatArray(1)
+                                android.location.Location.distanceBetween(
+                                    stop.latitude, stop.longitude,
+                                    pt.latitude, pt.longitude,
+                                    d
+                                )
+                                d[0] <= 150f
+                            }
+                        }
+                    } else emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+
+            relevantStops.forEach { stop ->
                 Marker(
                     state = MarkerState(
                         position = LatLng(stop.latitude, stop.longitude)
                     ),
-                    title = stop.name,
-                    snippet = "Paradero disponible",
+                    title = "🚏 " + stop.name,
+                    snippet = "Paradero oficial MistiGo",
+                    icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE),
                     onClick = {
                         onStopClick(stop)
-                        true
+                        false
                     }
                 )
             }
 
             buses.forEach { bus ->
+                val dist = userLocation?.let { ul ->
+                    val res = FloatArray(1)
+                    android.location.Location.distanceBetween(
+                        ul.latitude,
+                        ul.longitude,
+                        bus.latitude,
+                        bus.longitude,
+                        res
+                    )
+                    res[0]
+                }
+
+                val etaMinutes = dist?.let { d ->
+                    val speed = if (bus.speedKmh > 5f) bus.speedKmh else 22f
+                    kotlin.math.ceil((d / 1000f) / speed * 60f).toInt().coerceAtLeast(1)
+                }
+
+                val etaText = if (etaMinutes != null) {
+                    if (etaMinutes <= 1) "🚍 ¡Llegando a tu posición!" else "🚍 Llegada estimada: ~$etaMinutes min (${dist?.toInt()} m) • ${bus.status}"
+                } else {
+                    vehicleSnippet(bus)
+                }
+
                 Marker(
                     state = MarkerState(
                         position = LatLng(bus.latitude, bus.longitude)
                     ),
                     title = vehicleTitle(bus),
-                    snippet = vehicleSnippet(bus)
+                    snippet = etaText,
+                    icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_ORANGE)
                 )
             }
 
@@ -969,19 +1129,78 @@ fun SmartBusMapScreen(
             }
         }
 
-        FloatingActionButton(
-            onClick = { centerOnUser() },
+        if (currentRoute != null && pointsToShow.isNotEmpty()) {
+            Card(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 80.dp, start = 16.dp, end = 16.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.96f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(if (tripFilter == "BAJADA") Color(0xFFEA580C) else AppPalette.primary)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = (currentRoute?.name ?: "") + " • " + (if (tripFilter == "BAJADA") "BAJADA (Vuelta)" else "SUBIDA (Ida)"),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = SmartBusText
+                        )
+                        Text(
+                            text = (currentRoute?.origin ?: "") + " → " + (currentRoute?.destination ?: ""),
+                            fontSize = 11.sp,
+                            color = SmartBusTextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp, bottom = 96.dp),
-            containerColor = Color.White,
-            contentColor = SmartBusBlue,
-            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.MyLocation,
-                contentDescription = "Centrar en mi ubicacion"
-            )
+            FloatingActionButton(
+                onClick = { tripFilter = "SUBIDA" },
+                containerColor = if (tripFilter == "SUBIDA") AppPalette.primary else Color.White,
+                contentColor = if (tripFilter == "SUBIDA") Color.White else AppPalette.primary,
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp)
+            ) {
+                Text("Subida", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = SmartBusDisplay)
+            }
+            FloatingActionButton(
+                onClick = { tripFilter = "BAJADA" },
+                containerColor = if (tripFilter == "BAJADA") Color(0xFFEA580C) else Color.White,
+                contentColor = if (tripFilter == "BAJADA") Color.White else Color(0xFFEA580C),
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp)
+            ) {
+                Text("Bajada", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = SmartBusDisplay)
+            }
+            FloatingActionButton(
+                onClick = { centerOnUser() },
+                containerColor = Color.White,
+                contentColor = SmartBusBlue,
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MyLocation,
+                    contentDescription = "Centrar en mi ubicacion"
+                )
+            }
         }
     }
 }

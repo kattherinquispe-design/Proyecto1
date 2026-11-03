@@ -1,38 +1,56 @@
 package com.ejemplo.smartbus.ui.theme
 
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
 // ======================================================
 // SMARTBUS - PALETA PRINCIPAL
+// Fondo gris muy claro, texto azul marino oscuro y un
+// acento vivo (fucsia/coral por defecto) elegible en
+// Configuracion.
 // ======================================================
 
-val SmartBusBlue = Color(0xFF1769E8)
-val SmartBusBlueDark = Color(0xFF0D2B68)
-val SmartBusBlueDeep = Color(0xFF09245A)
-val SmartBusBlueLight = Color(0xFF4DA3FF)
-
-val SmartBusBackground = Color(0xFFF5F7FC)
+val SmartBusBackground = Color(0xFFF4F4F6)
 val SmartBusSurface = Color(0xFFFFFFFF)
 
-val SmartBusText = Color(0xFF102044)
-val SmartBusTextSecondary = Color(0xFF6D7890)
-val SmartBusTextLight = Color(0xFF9AA4B7)
+val SmartBusText = Color(0xFF1B1C2E)
+val SmartBusTextSecondary = Color(0xFF707584)
+val SmartBusTextLight = Color(0xFF9AA0AE)
 
 val SmartBusGreen = Color(0xFF22B573)
 val SmartBusGreenLight = Color(0xFFE5F8F0)
 
-val SmartBusYellow = Color(0xFFFFC83D)
-val SmartBusYellowLight = Color(0xFFFFF4CF)
-
 val SmartBusRed = Color(0xFFE94B5F)
 val SmartBusRedLight = Color(0xFFFFE7EA)
 
-val SmartBusPink = Color(0xFFFF5C8A)
-val SmartBusPinkLight = Color(0xFFFFE8EF)
+val SmartBusDivider = Color(0xFFECECF1)
 
-val SmartBusPurple = Color(0xFF7C5CFC)
-val SmartBusPurpleLight = Color(0xFFEDE9FF)
-
-val SmartBusDivider = Color(0xFFE7EBF2)
+// Barra inferior oscura estilo moderno (foto de referencia)
+val SmartBusNavyBar = Color(0xFF232631)
 
 val Transparent = Color.Transparent
+
+// ======================================================
+// COLORES DINAMICOS
+// Su valor viene del acento elegido en Configuracion
+// (AppPalette), asi toda la app cambia al instante.
+// ======================================================
+
+val SmartBusBlue: Color get() = AppPalette.primary
+val SmartBusBlueDark: Color get() = AppPalette.primaryDark
+val SmartBusBlueLight: Color get() = AppPalette.primarySoft
+
+val SmartBusYellow: Color get() = AppPalette.primaryDark
+val SmartBusYellowLight: Color get() = AppPalette.primarySoft
+
+val SmartBusPink: Color get() = AppPalette.primary
+val SmartBusPinkLight: Color get() = AppPalette.primarySoft
+
+val SmartBusPurple: Color get() = AppPalette.primaryDark
+val SmartBusPurpleLight: Color get() = AppPalette.primarySoft
+
+// Degradado horizontal del acento: de intenso a coral suave.
+val SmartBusGradient: Brush
+    get() = Brush.horizontalGradient(
+        colors = listOf(AppPalette.primary, AppPalette.primaryDark)
+    )

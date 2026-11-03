@@ -123,23 +123,15 @@ interface VehicleDao {
     )
 
     /**
-     * Suelta la unidad: el conductor ya no la conduce, asi que deja de
-     * asociarse a el y el simulador vuelve a poder moverla. Es lo que
-     * hace que, al terminar el servicio o al desviarse demasiado, el
-     * pasajero deje de ver al conductor.
+     * Suelta la unidad: cuando el conductor termina el servicio, el
+     * vehiculo se elimina de los buses activos para no confundir al
+     * pasajero con un bus fantasma o simulado.
      */
-    @Query(
-        """
-        UPDATE vehicles
-        SET driverName = '',
-            plate = NULL,
-            plateCount = 0,
-            isMock = 1,
-            status = 'En ruta'
-        WHERE id = :vehicleId
-        """
-    )
+    @Query("DELETE FROM vehicles WHERE id = :vehicleId")
     suspend fun clearLivePosition(vehicleId: Int)
+
+    @Query("DELETE FROM vehicles WHERE isMock = 1 OR driverName = ''")
+    suspend fun deleteSimulatedVehicles()
 
     /**
      * Escribe la posicion real de una unidad que tiene conductor
@@ -230,6 +222,9 @@ interface DriverProfileDao {
 
     @Query("SELECT * FROM driver_profiles WHERE accountId = :accountId")
     suspend fun get(accountId: String): DriverProfileEntity?
+
+    @Query("SELECT * FROM driver_profiles WHERE LOWER(email) = LOWER(:email) LIMIT 1")
+    suspend fun getByEmail(email: String): DriverProfileEntity?
 
     @Query("SELECT COUNT(*) FROM driver_profiles WHERE documentId = :documentId")
     suspend fun countByDocumentId(documentId: String): Int

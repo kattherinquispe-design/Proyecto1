@@ -15,7 +15,9 @@ data class RouteCandidate(
     val distanceToStopMeters: Float,
     val buses: List<Bus>,
     val closestBus: Bus? = null,
-    val closestBusDistanceMeters: Float? = null
+    val closestBusDistanceMeters: Float? = null,
+    val distanceToUserMeters: Float? = null,
+    val distanceToDestinationMeters: Float? = null
 ) {
 
     /**

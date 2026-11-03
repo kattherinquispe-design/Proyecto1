@@ -28,6 +28,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_HIGH_ACCURACY = "high_accuracy_location"
         private const val KEY_DISTANCE_UNITS = "distance_units"
         private const val KEY_AUTO_START_ON_BOARD = "auto_start_on_board"
+        private const val KEY_ACCENT_COLOR = "accent_color"
     }
 
     private val autoTrackingState = mutableStateOf(
@@ -59,6 +60,11 @@ class SettingsRepository(context: Context) {
         preferences.getString(KEY_DISTANCE_UNITS, UNITS_METRIC) ?: UNITS_METRIC
     )
     val distanceUnits: String get() = distanceUnitsState.value
+
+    private val accentColorState = mutableStateOf(
+        preferences.getString(KEY_ACCENT_COLOR, null)
+    )
+    val accentColorId: String? get() = accentColorState.value
 
     fun setAutoTracking(enabled: Boolean) {
         preferences.edit().putBoolean(KEY_AUTO_TRACKING, enabled).apply()
@@ -92,6 +98,11 @@ class SettingsRepository(context: Context) {
         distanceUnitsState.value = units
     }
 
+    fun setAccentColor(accentId: String?) {
+        preferences.edit().putString(KEY_ACCENT_COLOR, accentId).apply()
+        accentColorState.value = accentId
+    }
+
     fun resetToDefaults() {
         preferences.edit().clear().apply()
         autoTrackingState.value = true
@@ -100,6 +111,7 @@ class SettingsRepository(context: Context) {
         highAccuracyState.value = true
         autoStartOnBoardState.value = false
         distanceUnitsState.value = UNITS_METRIC
+        accentColorState.value = null
     }
 
     /**

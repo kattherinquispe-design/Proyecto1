@@ -1,55 +1,123 @@
 package com.ejemplo.smartbus.ui.theme
 
 import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.ejemplo.smartbus.R
+
+/**
+ * Tipografia mixta:
+ * - Sora (fuente variable, moderna y con mucho estilo) para titulares.
+ * - Poppins (limpia y legible) para textos de cuerpo.
+ * Da un look unico, mas estetico que la tipografia por defecto.
+ */
+val SmartBusDisplay = FontFamily(
+    Font(R.font.sora_var, FontWeight.Normal),
+    Font(R.font.sora_var, FontWeight.Medium),
+    Font(R.font.sora_var, FontWeight.SemiBold),
+    Font(R.font.sora_var, FontWeight.Bold)
+)
+
+val SmartBusBody = FontFamily(
+    Font(R.font.poppins_regular, FontWeight.Normal),
+    Font(R.font.poppins_medium, FontWeight.Medium),
+    Font(R.font.poppins_semibold, FontWeight.SemiBold),
+    Font(R.font.poppins_bold, FontWeight.Bold)
+)
 
 val SmartBusTypography = Typography(
 
-    displayLarge = androidx.compose.ui.text.TextStyle(
-        fontSize = 34.sp,
+    displayLarge = TextStyle(
+        fontFamily = SmartBusDisplay,
+        fontSize = 36.sp,
         fontWeight = FontWeight.Bold,
-        letterSpacing = (-0.8).sp
+        letterSpacing = (-1.0).sp
     ),
 
-    headlineLarge = androidx.compose.ui.text.TextStyle(
-        fontSize = 27.sp,
+    displaySmall = TextStyle(
+        fontFamily = SmartBusDisplay,
+        fontSize = 30.sp,
         fontWeight = FontWeight.Bold,
-        letterSpacing = (-0.4).sp
+        letterSpacing = (-0.6).sp
     ),
 
-    headlineMedium = androidx.compose.ui.text.TextStyle(
-        fontSize = 23.sp,
+    headlineLarge = TextStyle(
+        fontFamily = SmartBusDisplay,
+        fontSize = 28.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = (-0.5).sp
+    ),
+
+    headlineMedium = TextStyle(
+        fontFamily = SmartBusDisplay,
+        fontSize = 24.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = (-0.3).sp
+    ),
+
+    headlineSmall = TextStyle(
+        fontFamily = SmartBusDisplay,
+        fontSize = 21.sp,
         fontWeight = FontWeight.Bold
     ),
 
-    titleLarge = androidx.compose.ui.text.TextStyle(
+    titleLarge = TextStyle(
+        fontFamily = SmartBusDisplay,
         fontSize = 19.sp,
         fontWeight = FontWeight.Bold
     ),
 
-    titleMedium = androidx.compose.ui.text.TextStyle(
+    titleMedium = TextStyle(
+        fontFamily = SmartBusBody,
         fontSize = 16.sp,
         fontWeight = FontWeight.SemiBold
     ),
 
-    bodyLarge = androidx.compose.ui.text.TextStyle(
+    titleSmall = TextStyle(
+        fontFamily = SmartBusBody,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.SemiBold
+    ),
+
+    bodyLarge = TextStyle(
+        fontFamily = SmartBusBody,
         fontSize = 16.sp,
         fontWeight = FontWeight.Normal
     ),
 
-    bodyMedium = androidx.compose.ui.text.TextStyle(
+    bodyMedium = TextStyle(
+        fontFamily = SmartBusBody,
         fontSize = 14.sp,
         fontWeight = FontWeight.Normal
     ),
 
-    bodySmall = androidx.compose.ui.text.TextStyle(
+    bodySmall = TextStyle(
+        fontFamily = SmartBusBody,
         fontSize = 12.sp,
         fontWeight = FontWeight.Normal
     ),
 
-    labelLarge = androidx.compose.ui.text.TextStyle(
+    labelLarge = TextStyle(
+        fontFamily = SmartBusBody,
         fontSize = 14.sp,
-        fontWeight = FontWeight.Bold
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.2.sp
+    ),
+
+    labelMedium = TextStyle(
+        fontFamily = SmartBusBody,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.6.sp
+    ),
+
+    labelSmall = TextStyle(
+        fontFamily = SmartBusBody,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.4.sp
     )
 )

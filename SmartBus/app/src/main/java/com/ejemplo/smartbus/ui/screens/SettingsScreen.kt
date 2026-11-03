@@ -1,7 +1,10 @@
 package com.ejemplo.smartbus.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,11 +14,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.BluetoothSearching
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsBus
@@ -23,6 +28,7 @@ import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Straighten
@@ -45,10 +51,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.ejemplo.smartbus.data.SettingsRepository
+import com.ejemplo.smartbus.ui.theme.AppAccent
+import com.ejemplo.smartbus.ui.theme.AppPalette
 import com.ejemplo.smartbus.ui.theme.SmartBusBlue
 import com.ejemplo.smartbus.ui.theme.SmartBusDivider
 import com.ejemplo.smartbus.ui.theme.SmartBusGreen
@@ -187,6 +197,59 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(18.dp))
 
+            SettingsSectionTitle("Apariencia")
+
+            SettingsCard {
+
+                Column(modifier = Modifier.padding(15.dp)) {
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+
+                        Icon(
+                            imageVector = Icons.Default.Palette,
+                            contentDescription = null,
+                            tint = SmartBusBlue,
+                            modifier = Modifier.size(22.dp)
+                        )
+
+                        Spacer(modifier = Modifier.size(14.dp))
+
+                        Text(
+                            text = "Color de la aplicacion",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = "Se aplica de inmediato en todas las pantallas",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SmartBusTextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+
+                        AppAccent.entries.forEach { accent ->
+
+                            AccentColorDot(
+                                accent = accent,
+                                selected =
+                                    AppPalette.accent == accent,
+                                onClick = {
+                                    settings.setAccentColor(accent.id)
+                                    AppPalette.setAccent(accent)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
             SettingsSectionTitle("Avisos")
 
             SettingsCard {
@@ -251,7 +314,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(18.dp))
 
             Text(
-                text = "SmartBus · version 1.0",
+                text = "MISTIGO · version 1.0",
                 style = MaterialTheme.typography.bodySmall,
                 color = SmartBusTextSecondary,
                 modifier = Modifier.fillMaxWidth()
@@ -287,6 +350,42 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun AccentColorDot(
+    accent: AppAccent,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(accent.start, accent.end)
+                )
+            )
+            .border(
+                width = 3.dp,
+                color = if (selected) SmartBusText else Color.Transparent,
+                shape = CircleShape
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+
+        if (selected) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = accent.label,
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }
 

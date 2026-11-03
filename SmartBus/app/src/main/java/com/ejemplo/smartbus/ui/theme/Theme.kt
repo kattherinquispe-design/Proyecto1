@@ -1,45 +1,46 @@
 package com.ejemplo.smartbus.ui.theme
 
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 
-private val SmartBusLightScheme =
-    lightColorScheme(
-
-        primary = SmartBusBlue,
+@Composable
+fun SmartBusTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit
+) {
+    val colorScheme = lightColorScheme(
+        primary = AppPalette.primary,
         onPrimary = Color.White,
-
-        primaryContainer = Color(0xFFE5F0FF),
-        onPrimaryContainer = SmartBusBlueDark,
-
-        secondary = SmartBusBlueDark,
+        primaryContainer = AppPalette.primarySoft,
+        onPrimaryContainer = AppPalette.primaryDark,
+        secondary = AppPalette.primaryDark,
         onSecondary = Color.White,
-
         background = SmartBusBackground,
         onBackground = SmartBusText,
-
         surface = SmartBusSurface,
         onSurface = SmartBusText,
-
-        surfaceVariant = Color(0xFFF0F3F8),
+        surfaceVariant = Color(0xFFF0F0F3),
         onSurfaceVariant = SmartBusTextSecondary,
-
         error = SmartBusRed,
         onError = Color.White
     )
 
-@Composable
-fun SmartBusTheme(
-    darkTheme: Boolean = false,
-    content: @Composable () -> Unit
-) {
-
     MaterialTheme(
-        colorScheme = SmartBusLightScheme,
+        colorScheme = colorScheme,
         typography = SmartBusTypography,
-        content = content
-    )
+        shapes = SmartBusShapes
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = SmartBusBackground
+        ) {
+            content()
+        }
+    }
 }

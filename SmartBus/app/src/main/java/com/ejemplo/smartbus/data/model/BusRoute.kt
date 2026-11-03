@@ -11,5 +11,8 @@ data class BusRoute(
     val frequencyMinutes: Int = 10,
     val isActive: Boolean = true,
     val hasDeviation: Boolean = false,
-    val deviationInfo: String? = null
+    val deviationInfo: String? = null,
+    val subidaPoints: List<GeoPoint> = emptyList(),
+    val bajadaPoints: List<GeoPoint> = emptyList(),
+    val tripType: String = "SUBIDA"
 )

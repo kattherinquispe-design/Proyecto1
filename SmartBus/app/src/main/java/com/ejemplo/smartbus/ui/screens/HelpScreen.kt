@@ -186,7 +186,7 @@ fun HelpScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             Text(
-                text = "SmartBus · version 1.0",
+                text = "MISTIGO · version 1.0",
                 style = MaterialTheme.typography.bodySmall,
                 color = SmartBusTextSecondary,
                 modifier = Modifier.fillMaxWidth()

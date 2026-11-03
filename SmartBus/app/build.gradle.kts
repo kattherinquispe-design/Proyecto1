@@ -1,19 +1,20 @@
+
 import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    id("com.google.gms.google-services")
 }
-
 // La clave de Google Maps se lee de local.properties para no dejarla
 // escrita en el repositorio.
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) {
-        file.inputStream().use { load(it) }
+    val localProperties = Properties().apply {
+        val file = rootProject.file("local.properties")
+        if (file.exists()) {
+            file.inputStream().use { load(it) }
+        }
     }
-}
 
 fun requireLocalProperty(name: String): String =
     localProperties.getProperty(name)?.trim()?.takeIf { it.isNotEmpty() }
@@ -67,6 +68,15 @@ android {
     }
 }
 
+// Firebase trae play-services-measurement compilado con Kotlin 2.4,
+// mientras que el proyecto usa Kotlin 2.2. Sin este flag la compilacion
+// falla por "incompatible version of Kotlin" antes de revisar el codigo.
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.add("-Xskip-metadata-version-check")
+    }
+}
+
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
@@ -95,6 +105,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
     implementation("androidx.datastore:datastore-preferences:1.1.0")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("io.coil-kt:coil-compose:2.6.0")
 
     // Inicio de sesion con Google
     implementation(libs.play.services.auth)
@@ -103,4 +114,8 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-analytics")
+    implementation("com.google.firebase:firebase-firestore")
+    implementation("com.google.firebase:firebase-auth")
 }

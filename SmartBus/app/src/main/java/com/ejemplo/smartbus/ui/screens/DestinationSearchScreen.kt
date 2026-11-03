@@ -1,6 +1,7 @@
 package com.ejemplo.smartbus.ui.screens
 
 import android.location.Geocoder
+import com.ejemplo.smartbus.data.TripHistoryRepository
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -24,12 +25,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,8 +62,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ejemplo.smartbus.data.FirebaseRouteRepository
+import com.ejemplo.smartbus.data.model.BusRoute
+import com.ejemplo.smartbus.ui.theme.SmartBusBlue
+import com.ejemplo.smartbus.ui.theme.SmartBusGreen
 import com.google.android.gms.maps.model.LatLng
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -77,42 +84,66 @@ data class GeocodeResult(
 fun DestinationSearchScreen(
     onBack: () -> Unit,
     onLocationSelected: (LatLng, String) -> Unit,
+    onRouteSelected: ((BusRoute) -> Unit)? = null,
     currentLocation: LatLng? = null
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+    val coroutineScope = rememberCoroutineScope()
 
     var query by remember { mutableStateOf("") }
     val results = remember { mutableStateListOf<GeocodeResult>() }
+    val routeResults = remember { mutableStateListOf<BusRoute>() }
     var isSearching by remember { mutableStateOf(false) }
     var showResults by remember { mutableStateOf(false) }
 
     val focusRequester = remember { FocusRequester() }
+    var searchJob by remember { mutableStateOf<Job?>(null) }
 
+    // Al abrir la pantalla, cargar rutas disponibles de Firebase
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
         keyboardController?.show()
+        val initialRoutes = FirebaseRouteRepository.loadRoutes()
+        routeResults.clear()
+        routeResults.addAll(initialRoutes.take(12))
     }
 
     fun clearResults() {
         results.clear()
+        routeResults.clear()
         showResults = false
         isSearching = false
     }
 
-    fun searchPlaces(text: String) {
+    fun performSearch(text: String) {
+        searchJob?.cancel()
         if (text.isBlank()) {
-            clearResults()
+            coroutineScope.launch {
+                val initialRoutes = FirebaseRouteRepository.loadRoutes()
+                withContext(Dispatchers.Main) {
+                    routeResults.clear()
+                    routeResults.addAll(initialRoutes.take(12))
+                    results.clear()
+                    isSearching = false
+                    showResults = false
+                }
+            }
             return
         }
-        coroutineScope.launch(Dispatchers.IO) {
+
+        searchJob = coroutineScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) { isSearching = true }
+
+            // 1. Buscar en Firebase Firestore colección "rutas"
+            val matchedFirebaseRoutes = FirebaseRouteRepository.searchRoutes(text)
+
+            // 2. Buscar en Geocoder de Google Maps
+            val geocodeList = mutableListOf<GeocodeResult>()
             try {
                 val geocoder = Geocoder(context, Locale.getDefault())
-                val addresses = geocoder.getFromLocationName(text, 10)
-                val list = mutableListOf<GeocodeResult>()
+                val addresses = geocoder.getFromLocationName(text, 8)
                 addresses?.forEach { addr ->
                     val lat = addr.latitude
                     val lon = addr.longitude
@@ -138,7 +169,7 @@ fun DestinationSearchScreen(
                             append(parts.joinToString(", "))
                             if (isEmpty()) append("$lat, $lon")
                         }
-                        list.add(
+                        geocodeList.add(
                             GeocodeResult(
                                 name = title,
                                 address = fullAddress.ifBlank { "$lat,$lon" },
@@ -147,17 +178,18 @@ fun DestinationSearchScreen(
                         )
                     }
                 }
-                withContext(Dispatchers.Main) {
-                    results.clear()
-                    results.addAll(list.distinctBy { it.location.latitude to it.location.longitude })
-                    showResults = results.isNotEmpty()
-                    isSearching = false
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isSearching = false
-                    showResults = false
-                }
+            } catch (_: Exception) {
+            }
+
+            withContext(Dispatchers.Main) {
+                routeResults.clear()
+                routeResults.addAll(matchedFirebaseRoutes)
+
+                results.clear()
+                results.addAll(geocodeList.distinctBy { it.location.latitude to it.location.longitude })
+
+                showResults = true
+                isSearching = false
             }
         }
     }
@@ -197,27 +229,27 @@ fun DestinationSearchScreen(
                             value = query,
                             onValueChange = {
                                 query = it
-                                searchPlaces(it)
+                                performSearch(it)
                             },
                             modifier = Modifier
                                 .weight(1f)
                                 .focusRequester(focusRequester),
                             placeholder = {
-                                Text("¿A dónde quieres ir?", color = Color(0xFF9AA5B1))
+                                Text("Busca ruta, paradero o lugar...", color = Color(0xFF9AA5B1))
                             },
                             singleLine = true,
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Default.Search,
                                     contentDescription = "Buscar",
-                                    tint = Color(0xFF1A73E8)
+                                    tint = SmartBusBlue
                                 )
                             },
                             trailingIcon = {
                                 if (query.isNotEmpty()) {
                                     IconButton(onClick = {
                                         query = ""
-                                        clearResults()
+                                        performSearch("")
                                         focusRequester.requestFocus()
                                         keyboardController?.show()
                                     }) {
@@ -234,22 +266,27 @@ fun DestinationSearchScreen(
                             ),
                             keyboardActions = KeyboardActions(
                                 onDone = {
-                                    if (results.isNotEmpty()) {
-                                        val first = results.first()
-                                        keyboardController?.hide()
-                                        focusManager.clearFocus()
-                                        onLocationSelected(first.location, first.name)
-                                    } else if (query.isNotBlank()) {
-                                        searchPlaces(query)
-                                    } else {
-                                        keyboardController?.hide()
-                                        focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
+                                    if (routeResults.isNotEmpty()) {
+                                        val firstRoute = routeResults.first()
+                                        if (onRouteSelected != null) {
+                                            onRouteSelected(firstRoute)
+                                        } else {
+                                            val pt = firstRoute.points.firstOrNull()
+                                            if (pt != null) {
+                                                onLocationSelected(LatLng(pt.latitude, pt.longitude), firstRoute.name)
+                                            }
+                                        }
+                                    } else if (results.isNotEmpty()) {
+                                        val firstPlace = results.first()
+                                        onLocationSelected(firstPlace.location, firstPlace.name)
                                     }
                                 }
                             ),
                             shape = RoundedCornerShape(14.dp),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color(0xFF1A73E8),
+                                focusedBorderColor = SmartBusBlue,
                                 unfocusedBorderColor = Color(0xFFE5E7EB),
                                 focusedContainerColor = Color(0xFFF8FAFF),
                                 unfocusedContainerColor = Color(0xFFF2F4F7)
@@ -266,10 +303,10 @@ fun DestinationSearchScreen(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF1A73E8))
+                                    .background(SmartBusBlue)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Buscando...", fontSize = 13.sp, color = Color(0xFF64748B))
+                            Text("Buscando en Firebase y mapa...", fontSize = 13.sp, color = Color(0xFF64748B))
                         }
                     }
                 }
@@ -279,20 +316,20 @@ fun DestinationSearchScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // Opción rápida de usar ubicación actual
                 item {
-                    AnimatedVisibility(visible = currentLocation != null) {
+                    AnimatedVisibility(visible = currentLocation != null && query.isBlank()) {
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
                                     keyboardController?.hide()
                                     focusManager.clearFocus()
-                                    onLocationSelected(
-                                        currentLocation!!,
-                                        "Mi ubicación actual"
-                                    )
+                                    currentLocation?.let {
+                                        onLocationSelected(it, "Mi ubicación actual")
+                                    }
                                 },
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -307,13 +344,13 @@ fun DestinationSearchScreen(
                                     modifier = Modifier
                                         .size(40.dp)
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(Color(0xFF1A73E8).copy(alpha = 0.08f)),
+                                        .background(SmartBusBlue.copy(alpha = 0.08f)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.MyLocation,
                                         contentDescription = null,
-                                        tint = Color(0xFF1A73E8)
+                                        tint = SmartBusBlue
                                     )
                                 }
                                 Column {
@@ -323,7 +360,7 @@ fun DestinationSearchScreen(
                                         color = Color(0xFF1F2937)
                                     )
                                     Text(
-                                        "Ir desde donde estoy ahora",
+                                        "Buscar buses que pasen por donde estoy",
                                         fontSize = 13.sp,
                                         color = Color(0xFF64748B)
                                     )
@@ -333,7 +370,148 @@ fun DestinationSearchScreen(
                     }
                 }
 
+                // =======================================================
+                // SECCION: RUTAS REALES DESDE FIREBASE
+                // =======================================================
+                if (routeResults.isNotEmpty()) {
+                    item {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                        ) {
+                            Text(
+                                text = if (query.isBlank()) "Rutas de Bus disponibles (Firebase)" else "Rutas encontradas en Firebase (${routeResults.size})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = SmartBusBlue
+                            )
+                        }
+                    }
+
+                    items(routeResults, key = { "route_${it.id}" }) { route ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus()
+                                    TripHistoryRepository.get(context).recordTrip(route)
+                                    if (onRouteSelected != null) {
+                                        onRouteSelected(route)
+                                    } else {
+                                        val pt = route.points.firstOrNull() ?: route.subidaPoints.firstOrNull()
+                                        if (pt != null) {
+                                            onLocationSelected(LatLng(pt.latitude, pt.longitude), route.name)
+                                        }
+                                    }
+                                },
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(42.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(SmartBusBlue.copy(alpha = 0.12f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DirectionsBus,
+                                        contentDescription = null,
+                                        tint = SmartBusBlue,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = route.name,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = Color(0xFF1F2937),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "${route.origin} → ${route.destination}",
+                                        fontSize = 13.sp,
+                                        color = Color(0xFF64748B),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(SmartBusBlue.copy(alpha = 0.08f))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "Subida: ${route.subidaPoints.size} pts",
+                                                fontSize = 11.sp,
+                                                color = SmartBusBlue,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(SmartBusGreen.copy(alpha = 0.12f))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "Bajada: ${route.bajadaPoints.size} pts",
+                                                fontSize = 11.sp,
+                                                color = SmartBusGreen,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = null,
+                                    tint = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // =======================================================
+                // SECCION: DIRECCIONES Y LUGARES DE GOOGLE MAPS
+                // =======================================================
                 if (showResults && results.isNotEmpty()) {
+                    item {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                        ) {
+                            Text(
+                                text = "Direcciones y Lugares (${results.size})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF475569)
+                            )
+                        }
+                    }
+
                     items(results, key = { "${it.location.latitude},${it.location.longitude}" }) { r ->
                         Card(
                             modifier = Modifier
@@ -392,16 +570,16 @@ fun DestinationSearchScreen(
                     }
                 }
 
-                if (query.isNotBlank() && !isSearching && (!showResults || results.isEmpty())) {
+                if (query.isNotBlank() && !isSearching && (!showResults || (results.isEmpty() && routeResults.isEmpty()))) {
                     item {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 8.dp),
+                                .padding(top = 16.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                "Pulsa «Hecho» (Done) o espera para buscar",
+                                "No se encontraron rutas ni lugares para \"$query\"",
                                 fontSize = 13.sp,
                                 color = Color(0xFF94A3B8)
                             )
@@ -414,15 +592,12 @@ fun DestinationSearchScreen(
 }
 
 /**
- * El geocoder del dispositivo puede devolver nombres inservibles
- * (solo numeros o genericos). Se descartan para no mostrar un
- * destino sin sentido en el mapa.
+ * Filtra nombres genéricos devueltos por el geocoder.
  */
 private fun usableName(
     candidates: List<String>,
     fallbackQuery: String
 ): String {
-
     val cleaned = candidates
         .map { it.trim() }
         .filter { it.isNotBlank() }

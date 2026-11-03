@@ -7,5 +7,6 @@ data class Reward(
     val points: Int,
     val stock: Int = 0,
     val category: String = "general",
-    val isAvailable: Boolean = true
+    val isAvailable: Boolean = true,
+    val imageUrl: String = ""
 )

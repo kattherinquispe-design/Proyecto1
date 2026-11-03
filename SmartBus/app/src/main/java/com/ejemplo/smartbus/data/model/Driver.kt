@@ -205,6 +205,7 @@ enum class DriverDocumentStatus {
  */
 data class DriverProfile(
     val accountId: String,
+    val email: String = "",
     val fullName: String,
     val documentId: String,
     val documentType: String,

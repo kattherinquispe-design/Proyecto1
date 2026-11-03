@@ -2,195 +2,80 @@ package com.ejemplo.smartbus.data
 
 import android.util.Log
 import com.ejemplo.smartbus.data.model.Bus
-import com.ejemplo.smartbus.data.model.GeoPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 
+/**
+ * Repositorio de buses y conductores en vivo (100% real, sin simulacion).
+ * Escucha en tiempo real la coleccion 'vehiculos_en_vivo' de Firebase Firestore
+ * donde los conductores transmiten su GPS y ruta, y los distribuye a los pasajeros.
+ */
 object BusLiveRepository {
 
-    private const val SIMULATION_INTERVAL_MS = 3_000L
-    private const val SIMULATION_STEP = 0.03f
+    private var realDrivers: List<Bus> = emptyList()
 
-    private val _buses =
-        MutableStateFlow(
-            BusRepository.buses
-        )
-
-    val buses: StateFlow<List<Bus>> =
-        _buses
-
-    private val progressByBus =
-        mutableMapOf<Int, Float>()
-
-    private val simulationScope =
-        CoroutineScope(
-            SupervisorJob() +
-                Dispatchers.Default
-        )
-
+    private val _buses = MutableStateFlow<List<Bus>>(emptyList())
+    val buses: StateFlow<List<Bus>> = _buses
 
     init {
-
-        BusRepository.buses.forEach { bus ->
-
-            progressByBus[bus.id] = 0f
-        }
-
-        startSimulation()
+        startFirestoreListener()
     }
 
+    private fun startFirestoreListener() {
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            firestore.collection("vehiculos_en_vivo")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("BusLiveRepository", "Error escuchando vehiculos_en_vivo: ${error.message}")
+                        return@addSnapshotListener
+                    }
 
-    // =====================================================
-    // SIMULACION DE FLOTA EN TIEMPO REAL
-    // =====================================================
+                    val list = snapshot?.documents?.mapNotNull { doc ->
+                        val isMock = doc.getBoolean("isMock") ?: false
+                        if (isMock) return@mapNotNull null
 
-    private fun startSimulation() {
+                        val lat = doc.getDouble("latitude") ?: doc.getDouble("latitud") ?: return@mapNotNull null
+                        val lng = doc.getDouble("longitude") ?: doc.getDouble("longitud") ?: return@mapNotNull null
+                        val routeId = doc.getLong("routeId")?.toInt() ?: 0
+                        val speed = (doc.getDouble("speedKmh") ?: 0.0).toFloat()
+                        val plate = doc.getString("plate").orEmpty()
+                        val driverName = doc.getString("driverName").orEmpty()
+                        val status = doc.getString("status") ?: "EN_SERVICIO"
+                        val tripType = doc.getString("tripType") ?: "SUBIDA"
+                        val lastUpdate = doc.getLong("lastUpdate") ?: System.currentTimeMillis()
+                        val capacity = doc.getLong("capacity")?.toInt() ?: 0
 
-        simulationScope.launch {
+                        Bus(
+                            id = Math.abs(doc.id.hashCode()),
+                            code = if (plate.isNotBlank()) "Bus ${plate.uppercase()}" else "Bus Conductor",
+                            routeId = routeId,
+                            latitude = lat,
+                            longitude = lng,
+                            speedKmh = speed,
+                            tripType = tripType,
+                            driverName = driverName,
+                            plateCount = plate.filter { it.isDigit() }.takeLast(4).toIntOrNull() ?: 0,
+                            capacity = capacity,
+                            isMock = false,
+                            status = status,
+                            lastUpdate = lastUpdate
+                        )
+                    } ?: emptyList()
 
-            while (isActive) {
-
-                delay(SIMULATION_INTERVAL_MS)
-
-                try {
-
-                    advanceSimulation()
-
-                } catch (exception: Exception) {
-
-                    Log.e(
-                        "SmartBusFleet",
-                        "Error en la simulacion de flota: ${exception.message}"
-                    )
+                    realDrivers = list
+                    _buses.value = realDrivers
                 }
-            }
+        } catch (e: Exception) {
+            Log.w("BusLiveRepository", "Error al iniciar Firestore listener: ${e.message}")
         }
     }
-
 
     fun advanceSimulation() {
-
-        val currentBuses =
-            _buses.value.toMutableList()
-
-
-        val updatedBuses =
-            currentBuses.map { bus ->
-
-                val route =
-                    RouteRepository.routes
-                        .firstOrNull {
-                            it.id == bus.routeId
-                        }
-
-
-                if (
-                    route == null ||
-                    route.points.size < 2
-                ) {
-                    return@map bus
-                }
-
-
-                var progress =
-                    progressByBus[bus.id]
-                        ?: 0f
-
-
-                progress += SIMULATION_STEP
-
-
-                if (
-                    progress >=
-                    route.points.size - 1
-                ) {
-
-                    progress = 0f
-                }
-
-
-                progressByBus[bus.id] =
-                    progress
-
-
-                val segment =
-                    progress.toInt()
-
-
-                val fraction =
-                    (progress - segment).coerceIn(0f, 1f)
-
-
-                val start =
-                    route.points[segment]
-
-
-                val end =
-                    route.points[
-                        segment + 1
-                    ]
-
-
-                val latitude =
-                    interpolate(
-                        start.latitude,
-                        end.latitude,
-                        fraction
-                    )
-
-
-                val longitude =
-                    interpolate(
-                        start.longitude,
-                        end.longitude,
-                        fraction
-                    )
-
-
-                bus.copy(
-                    latitude = latitude,
-                    longitude = longitude
-                )
-            }
-
-
-        val now = System.currentTimeMillis()
-
-        _buses.value =
-            updatedBuses.map { bus ->
-                // Sin marcar la hora, la base de datos no distingue esta
-                // posicion de la anterior y deja de guardar el recorrido.
-                bus.copy(lastUpdate = now)
-            }
+        // Sin simulacion: todos los buses provienen de conductores reales.
     }
 
-
-    private fun interpolate(
-        start: Double,
-        end: Double,
-        fraction: Float
-    ): Double {
-
-        return start +
-                (end - start) *
-                fraction
-    }
-
-
-    fun getBusById(
-        busId: Int
-    ): Bus? {
-
-        return _buses.value
-            .firstOrNull {
-                it.id == busId
-            }
-    }
+    fun getBusById(busId: Int): Bus? =
+        _buses.value.firstOrNull { it.id == busId }
 }

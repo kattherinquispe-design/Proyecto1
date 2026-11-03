@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "441914536604",
+    "project_id": "mistigo-1c6a7",
+    "storage_bucket": "mistigo-1c6a7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:441914536604:android:e41209c8fae3f20d81f359",
+        "android_client_info": {
+          "package_name": "com.ejemplo.smartbus"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB-S1Lf3aW4nZrxS04WXH6q2ehek0rhlMI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

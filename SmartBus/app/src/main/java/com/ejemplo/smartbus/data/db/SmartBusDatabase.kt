@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
@@ -19,7 +21,7 @@ import androidx.room.RoomDatabase
         DriverShiftEntity::class,
         DriverTripEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class SmartBusDatabase : RoomDatabase() {
@@ -41,6 +43,12 @@ abstract class SmartBusDatabase : RoomDatabase() {
 
         private const val NAME = "smartbus.db"
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE driver_profiles ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var instance: SmartBusDatabase? = null
 
@@ -52,11 +60,7 @@ abstract class SmartBusDatabase : RoomDatabase() {
                         SmartBusDatabase::class.java,
                         NAME
                     )
-                    // Mientras el esquema sea el de desarrollo se
-                    // reconstruye la base al cambiarlo. Antes de salir
-                    // hay que escribir migraciones de verdad: esto borra
-                    // las posiciones guardadas al publicar una version
-                    // con el esquema cambiado.
+                    .addMigrations(MIGRATION_4_5)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { instance = it }

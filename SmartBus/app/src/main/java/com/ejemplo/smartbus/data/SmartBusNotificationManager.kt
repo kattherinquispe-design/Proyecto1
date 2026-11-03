@@ -3,10 +3,16 @@ package com.ejemplo.smartbus.data
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import com.ejemplo.smartbus.MainActivity
 
 class SmartBusNotificationManager(
     private val context: Context
@@ -15,10 +21,19 @@ class SmartBusNotificationManager(
     companion object {
 
         private const val CHANNEL_ID =
-            "smartbus_events"
+            "mistigo_alerts_sound_v3"
 
         private const val CHANNEL_NAME =
-            "Eventos SmartBus"
+            "Alertas y Puntos MistiGo"
+
+        const val EXTRA_NAVIGATE_TO =
+            "navigate_to"
+
+        const val TARGET_REWARDS =
+            "REWARDS"
+
+        const val TARGET_MAP =
+            "MAP"
 
         private const val ARRIVAL_ID =
             2001
@@ -34,6 +49,15 @@ class SmartBusNotificationManager(
 
         private const val SAVE_POINTS_ID =
             2005
+
+        private const val STOP_COOLDOWN_MS =
+            90_000L
+
+        @Volatile
+        private var lastNotifiedStopName: String? = null
+
+        @Volatile
+        private var lastNotifiedStopAt: Long = 0L
     }
 
     init {
@@ -47,20 +71,27 @@ class SmartBusNotificationManager(
                 Context.NOTIFICATION_SERVICE
             ) as NotificationManager
 
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
         val channel =
             NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
-                NotificationManager
-                    .IMPORTANCE_HIGH
-            )
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notificaciones de paraderos cercanos y puntos ganados en MistiGo"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 300, 150, 300)
+                enableLights(true)
+                lightColor = Color.parseColor("#2563EB")
+                setSound(soundUri, audioAttributes)
+            }
 
-        channel.description =
-            "Notificaciones de SmartBus"
-
-        manager.createNotificationChannel(
-            channel
-        )
+        manager.createNotificationChannel(channel)
     }
 
     private fun canNotify(): Boolean {
@@ -81,49 +112,94 @@ class SmartBusNotificationManager(
         }
     }
 
+    private fun buildContentIntent(
+        requestCode: Int,
+        target: String
+    ): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_NAVIGATE_TO, target)
+        }
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     fun showArrivalAtStop(
         stopName: String
     ) {
 
         if (!canNotify()) return
 
+        val now = System.currentTimeMillis()
+        if (lastNotifiedStopName == stopName && now - lastNotifiedStopAt < STOP_COOLDOWN_MS) {
+            return
+        }
+        lastNotifiedStopName = stopName
+        lastNotifiedStopAt = now
+
+        val title = "🚏 ¡Estás en el paradero $stopName!"
+        val shortMsg = "📍 Entraste al radio del paradero. ¡Aborda tu bus y gana +20 puntos!"
+        val bigMsg = "📍 Te encuentras dentro del radio del paradero $stopName.\n" +
+            "🚌 Toma tu bus MistiGo desde aquí para ganar +20 puntos automáticamente en tu viaje."
+
         notify(
             id = ARRIVAL_ID,
-
-            title =
-                "Paradero relacionado Llegaste a tu paradero",
-
-            message =
-                "Estás en $stopName. SmartBus está verificando tu abordaje."
+            title = title,
+            message = shortMsg,
+            bigText = bigMsg,
+            subText = "MistiGo • Paradero activo",
+            accentColor = Color.parseColor("#2563EB"),
+            target = TARGET_MAP
         )
     }
 
     fun showBoardingValidated(
         stopName: String,
-        points: Int
+        points: Int = 20,
+        totalPoints: Int? = null
     ) {
 
         if (!canNotify()) return
 
+        val balanceText = if (totalPoints != null) " Tu saldo actual es de $totalPoints puntos." else ""
+        val title = "🎉 ¡Recibiste +$points puntos en MistiGo!"
+        val shortMsg = "✅ Viaje en bus desde $stopName. Toca para ver tus puntos."
+        val bigMsg = "✅ ¡Viaje validado desde el paradero $stopName!\n" +
+            "⭐ Has ganado +$points puntos por viajar en bus.$balanceText\n" +
+            "🎁 Toca esta notificación para abrir MistiGo y ver tus puntos."
+
         notify(
             id = BOARDING_ID,
-
-            title =
-                "Abordaje validado",
-
-            message =
-                "Ganaste +$points puntos en $stopName."
+            title = title,
+            message = shortMsg,
+            bigText = bigMsg,
+            subText = "MistiGo • +$points Puntos",
+            accentColor = Color.parseColor("#10B981"),
+            target = TARGET_REWARDS,
+            actionLabel = "Ver mis puntos 🎁"
         )
     }
 
     fun showPointsEarned(points: Int, stopName: String) {
-        if (!canNotify()) return
-        notify(BOARDING_ID, "¡Puntos obtenidos!", "+$points puntos en $stopName")
+        showBoardingValidated(stopName = stopName, points = points)
     }
 
     fun showPointsMilestone(points: Int) {
         if (!canNotify()) return
-        notify(ALERT_ID + 10, "¡Felicidades!", "Has alcanzado $points puntos")
+        notify(
+            id = ALERT_ID + 10,
+            title = "🏆 ¡Nuevo logro de puntos!",
+            message = "Has alcanzado $points puntos en MistiGo. Toca para ver tus recompensas.",
+            bigText = "🏆 ¡Felicidades! Ya acumulaste $points puntos en MistiGo.\n🎁 Toca aquí para ver tus puntos y canjear premios.",
+            subText = "MistiGo • Recompensas",
+            accentColor = Color.parseColor("#F59E0B"),
+            target = TARGET_REWARDS,
+            actionLabel = "Ver recompensas"
+        )
     }
 
     /**
@@ -137,19 +213,25 @@ class SmartBusNotificationManager(
 
         notify(
             id = SAVE_POINTS_ID,
-
-            title =
-                "Guarda tus puntos",
-
-            message =
-                "Tienes $points puntos. Inicia sesion para guardarlos " +
-                    "de forma segura y no perderlos."
+            title = "💾 Guarda tus $points puntos",
+            message = "Tienes $points puntos acumulados. Inicia sesión para respaldarlos en tu cuenta.",
+            bigText = "Tienes $points puntos acumulados en MistiGo.\n🔒 Inicia sesión con tu correo o Google para guardarlos de forma segura y no perderlos.",
+            subText = "MistiGo • Cuenta",
+            accentColor = Color.parseColor("#2563EB"),
+            target = TARGET_REWARDS
         )
     }
 
     fun showRewardAvailable(rewardName: String) {
         if (!canNotify()) return
-        notify(ALERT_ID + 11, "Recompensa disponible", "$rewardName te está esperando")
+        notify(
+            id = ALERT_ID + 11,
+            title = "🎁 ¡Recompensa disponible!",
+            message = "$rewardName ya está disponible para canjear con tus puntos.",
+            subText = "MistiGo • Canjes",
+            accentColor = Color.parseColor("#10B981"),
+            target = TARGET_REWARDS
+        )
     }
 
     fun showBusEta(
@@ -161,22 +243,18 @@ class SmartBusNotificationManager(
 
         val message =
             if (etaMinutes <= 0) {
-
-                "Ruta $busCode está llegando."
-
+                "🚍 La unidad $busCode está llegando a tu paradero."
             } else {
-
-                "Ruta $busCode llega aproximadamente en $etaMinutes min."
+                "🚍 La unidad $busCode llega aproximadamente en $etaMinutes min."
             }
 
         notify(
             id = ETA_ID,
-
-            title =
-                "Cada Tu bus",
-
-            message =
-                message
+            title = "🚌 Tu bus MistiGo se acerca",
+            message = message,
+            subText = "MistiGo • Tiempo real",
+            accentColor = Color.parseColor("#2563EB"),
+            target = TARGET_MAP
         )
     }
 
@@ -189,43 +267,61 @@ class SmartBusNotificationManager(
 
         notify(
             id = ALERT_ID,
-
-            title =
-                "Reportar problema $title",
-
-            message =
-                message
+            title = "⚠️ Alerta de servicio: $title",
+            message = message,
+            subText = "MistiGo • Avisos",
+            accentColor = Color.parseColor("#EF4444"),
+            target = TARGET_MAP
         )
     }
 
     private fun notify(
         id: Int,
         title: String,
-        message: String
+        message: String,
+        bigText: String = message,
+        subText: String = "MistiGo",
+        accentColor: Int = Color.parseColor("#2563EB"),
+        target: String = TARGET_MAP,
+        actionLabel: String? = null
     ) {
 
-        val notification =
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val contentIntent = buildContentIntent(id, target)
+
+        val builder =
             NotificationCompat
                 .Builder(
                     context,
                     CHANNEL_ID
                 )
                 .setSmallIcon(
-                    android.R.drawable
-                        .ic_menu_mylocation
+                    android.R.drawable.ic_menu_mylocation
                 )
-                .setContentTitle(
-                    title
+                .setContentTitle(title)
+                .setContentText(message)
+                .setSubText(subText)
+                .setColor(accentColor)
+                .setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .bigText(bigText)
+                        .setBigContentTitle(title)
+                        .setSummaryText(subText)
                 )
-                .setContentText(
-                    message
-                )
-                .setPriority(
-                    NotificationCompat
-                        .PRIORITY_HIGH
-                )
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setSound(soundUri)
+                .setVibrate(longArrayOf(0, 300, 150, 300))
+                .setContentIntent(contentIntent)
                 .setAutoCancel(true)
-                .build()
+
+        if (!actionLabel.isNullOrBlank()) {
+            builder.addAction(
+                android.R.drawable.ic_menu_view,
+                actionLabel,
+                contentIntent
+            )
+        }
 
         val manager =
             context.getSystemService(
@@ -234,7 +330,7 @@ class SmartBusNotificationManager(
 
         manager.notify(
             id,
-            notification
+            builder.build()
         )
     }
 }

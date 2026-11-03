@@ -1,6 +1,7 @@
 package com.ejemplo.smartbus
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -9,9 +10,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.ejemplo.smartbus.data.PointsEventManager
 import com.ejemplo.smartbus.data.SettingsRepository
+import com.ejemplo.smartbus.data.SmartBusNotificationManager
 import com.ejemplo.smartbus.location.TrackingManager
 import com.ejemplo.smartbus.navigation.SmartBusNavigation
+import com.ejemplo.smartbus.ui.theme.AppPalette
 import com.ejemplo.smartbus.ui.theme.SmartBusTheme
 
 /**
@@ -45,28 +49,35 @@ class MainActivity : ComponentActivity() {
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        window.decorView.setBackgroundColor(android.graphics.Color.parseColor("#F4F4F6"))
         super.onCreate(savedInstanceState)
 
-        showApp()
-    }
+        handleNavigationIntent(intent)
 
-    /**
-     * Monta la interfaz. Se llama una sola vez aunque el sistema
-     * recree la actividad, porque setContent no se puede repetir.
-     */
-    private fun showApp() {
-
-        if (isContentSet) {
-            return
+        try {
+            applySettings()
+        } catch (e: Exception) {
+            Log.e("SmartBus", "Error al aplicar configuraciones iniciales: ${e.message}", e)
         }
-        isContentSet = true
-
-        applySettings()
 
         setContent {
             SmartBusTheme {
                 SmartBusNavigation()
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNavigationIntent(intent)
+    }
+
+    private fun handleNavigationIntent(intent: Intent?) {
+        val target = intent?.getStringExtra(SmartBusNotificationManager.EXTRA_NAVIGATE_TO)
+        if (!target.isNullOrBlank()) {
+            PointsEventManager.requestNavigation(target)
+            intent.removeExtra(SmartBusNotificationManager.EXTRA_NAVIGATE_TO)
         }
     }
 
@@ -79,10 +90,10 @@ class MainActivity : ComponentActivity() {
 
         val settings = SettingsRepository(this)
 
+        AppPalette.setAccent(settings.accentColorId)
+
         if (settings.autoTracking) {
             ensureNotificationPermissionThenTrack()
-        } else {
-            stopTracking()
         }
     }
 

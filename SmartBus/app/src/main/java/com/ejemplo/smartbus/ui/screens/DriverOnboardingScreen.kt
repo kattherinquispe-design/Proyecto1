@@ -31,10 +31,15 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
+import android.widget.Toast
+import com.ejemplo.smartbus.data.LoginProvider
+import com.ejemplo.smartbus.data.SessionManager
+import com.ejemplo.smartbus.data.model.UserRole
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -96,18 +101,31 @@ fun DriverOnboardingScreen(
     onSaved: () -> Unit
 ) {
 
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val sessionEmail = remember(context) {
+        SessionManager.get(context).session.value?.email.orEmpty()
+    }
 
-    var fullName by remember { mutableStateOf(existing?.fullName.orEmpty()) }
-    var documentType by remember { mutableStateOf(existing?.documentType ?: "DNI") }
-    var documentId by remember { mutableStateOf(existing?.documentId.orEmpty()) }
-    var birthDate by remember { mutableStateOf(existing?.birthDate.orEmpty()) }
-    var phone by remember { mutableStateOf(existing?.phone.orEmpty()) }
-    var licenseNumber by remember { mutableStateOf(existing?.licenseNumber.orEmpty()) }
-    var licenseClass by remember { mutableStateOf(existing?.licenseClass.orEmpty()) }
+    var email by remember(existing) {
+        mutableStateOf(existing?.email?.ifBlank { null } ?: sessionEmail)
+    }
+    var quickLoginEmail by remember(existing) {
+        mutableStateOf(existing?.email?.ifBlank { null } ?: sessionEmail)
+    }
+    var quickLoginLoading by remember { mutableStateOf(false) }
+    var quickLoginMessage by remember { mutableStateOf<String?>(null) }
+
+    var fullName by remember(existing) { mutableStateOf(existing?.fullName.orEmpty()) }
+    var documentType by remember(existing) { mutableStateOf(existing?.documentType ?: "DNI") }
+    var documentId by remember(existing) { mutableStateOf(existing?.documentId.orEmpty()) }
+    var birthDate by remember(existing) { mutableStateOf(existing?.birthDate.orEmpty()) }
+    var phone by remember(existing) { mutableStateOf(existing?.phone.orEmpty()) }
+    var licenseNumber by remember(existing) { mutableStateOf(existing?.licenseNumber.orEmpty()) }
+    var licenseClass by remember(existing) { mutableStateOf(existing?.licenseClass.orEmpty()) }
     var licenseExpiry by remember { mutableStateOf("") }
-    var emergencyName by remember { mutableStateOf(existing?.emergencyContactName.orEmpty()) }
-    var emergencyPhone by remember {
+    var emergencyName by remember(existing) { mutableStateOf(existing?.emergencyContactName.orEmpty()) }
+    var emergencyPhone by remember(existing) {
         mutableStateOf(existing?.emergencyContactPhone.orEmpty())
     }
 
@@ -197,7 +215,7 @@ fun DriverOnboardingScreen(
         Spacer(modifier = Modifier.height(6.dp))
 
         Text(
-            text = "Conduce con SmartBus",
+            text = "Conduce con MISTIGO",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = SmartBusText
@@ -214,6 +232,127 @@ fun DriverOnboardingScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Acceso rapido por correo para conductores ya registrados
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            shape = RoundedCornerShape(14.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Email,
+                        contentDescription = null,
+                        tint = SmartBusBlue,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "¿Ya eres conductor registrado?",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = SmartBusText
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = "Si ya registraste tus datos antes o se cerró tu sesión, ingresa tu correo electrónico para recuperar tu cuenta y vehículo sin volver a llenar todo.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SmartBusTextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = quickLoginEmail,
+                    onValueChange = {
+                        quickLoginEmail = it
+                        quickLoginMessage = null
+                    },
+                    label = { Text("Correo electrónico de conductor") },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(Icons.Default.Email, contentDescription = null, tint = SmartBusBlue)
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (quickLoginMessage != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = quickLoginMessage.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SmartBusRed
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Button(
+                    onClick = {
+                        val clean = quickLoginEmail.trim().lowercase()
+                        if (clean.isBlank() || !clean.contains("@") || !clean.contains(".")) {
+                            quickLoginMessage = "Ingresa un correo electrónico válido."
+                            return@Button
+                        }
+                        quickLoginLoading = true
+                        quickLoginMessage = null
+                        scope.launch {
+                            val restored = repository.loginOrRestoreByEmail(clean, accountId)
+                            quickLoginLoading = false
+                            if (restored != null) {
+                                SessionManager.get(context).signIn(
+                                    provider = LoginProvider.EMAIL,
+                                    userId = clean,
+                                    name = restored.fullName,
+                                    email = clean,
+                                    role = UserRole.DRIVER
+                                )
+                                email = restored.email.ifBlank { clean }
+                                fullName = restored.fullName
+                                documentType = restored.documentType
+                                documentId = restored.documentId
+                                birthDate = restored.birthDate.orEmpty()
+                                phone = restored.phone
+                                licenseNumber = restored.licenseNumber
+                                licenseClass = restored.licenseClass
+                                emergencyName = restored.emergencyContactName
+                                emergencyPhone = restored.emergencyContactPhone
+                                companyCode = restored.companyCode
+                                Toast.makeText(
+                                    context,
+                                    "¡Bienvenido de nuevo, ${restored.fullName}!",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                onBack()
+                            } else {
+                                email = clean
+                                quickLoginMessage =
+                                    "No encontramos un conductor registrado con ese correo. Completa tus datos abajo una sola vez y quedará guardado con tu correo."
+                            }
+                        }
+                    },
+                    enabled = !quickLoginLoading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (quickLoginLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Iniciar con mi correo")
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         DriverPermissionsCard()
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -223,6 +362,24 @@ fun DriverOnboardingScreen(
         Spacer(modifier = Modifier.height(20.dp))
 
         SectionTitle("Tus datos")
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it.trim() },
+            label = { Text("Correo electrónico") },
+            leadingIcon = {
+                Icon(Icons.Default.Email, contentDescription = null, tint = SmartBusBlue)
+            },
+            singleLine = true,
+            isError = email.isNotBlank() && (!email.contains("@") || !email.contains(".")),
+            supportingText = {
+                Text("Con este correo podrás iniciar rápido como conductor sin llenar todo de nuevo.")
+            },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         OutlinedTextField(
             value = fullName,
@@ -557,6 +714,9 @@ fun DriverOnboardingScreen(
 
                 when {
 
+                    email.trim().isBlank() || !email.contains("@") || !email.contains(".") ->
+                        error = "Ingresa un correo electrónico válido para guardar tu cuenta de conductor."
+
                     fullName.trim().split(" ").size < 2 ->
                         error = "Escribe tu nombre y apellido."
 
@@ -618,10 +778,12 @@ fun DriverOnboardingScreen(
                             }
 
                             val expiryMillis = parseDate(licenseExpiry)
+                            val cleanDriverEmail = email.trim().lowercase()
 
                             repository.saveProfile(
                                 DriverProfile(
                                     accountId = accountId,
+                                    email = cleanDriverEmail,
                                     fullName = fullName.trim(),
                                     documentId = documentId.trim(),
                                     documentType = documentType.trim().uppercase(),
@@ -645,6 +807,19 @@ fun DriverOnboardingScreen(
                                         ?: System.currentTimeMillis()
                                 )
                             )
+
+                            if (cleanDriverEmail.isNotBlank()) {
+                                val currentSession = SessionManager.get(context).session.value
+                                if (currentSession == null || currentSession.email.isBlank()) {
+                                    SessionManager.get(context).signIn(
+                                        provider = LoginProvider.EMAIL,
+                                        userId = cleanDriverEmail,
+                                        name = fullName.trim(),
+                                        email = cleanDriverEmail,
+                                        role = UserRole.DRIVER
+                                    )
+                                }
+                            }
 
                             saving = false
                             onSaved()
