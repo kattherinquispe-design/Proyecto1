@@ -63,6 +63,8 @@ import com.ejemplo.smartbus.ui.theme.SmartBusBody
 import com.ejemplo.smartbus.ui.theme.SmartBusDisplay
 import com.ejemplo.smartbus.ui.theme.SmartBusText
 import com.ejemplo.smartbus.ui.theme.SmartBusTextSecondary
+import androidx.compose.ui.platform.LocalContext
+import com.ejemplo.smartbus.data.PointsRepository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
@@ -79,6 +81,7 @@ fun SignInScreen(
     onSignInWithEmail: (email: String, name: String) -> Unit,
     onContinueAsGuest: (name: String) -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     // 0 = Iniciar Sesión, 1 = Registrarse
@@ -381,16 +384,40 @@ fun SignInScreen(
                                 auth.signInWithEmailAndPassword(cleanEmail, cleanPass)
                                     .addOnSuccessListener { result ->
                                         val uid = result.user?.uid ?: cleanEmail
+                                        val emailKey = cleanEmail.lowercase().replace("@", "_").replace(".", "_")
+                                        val accountKey = "email_${cleanEmail.lowercase()}"
                                         val db = FirebaseFirestore.getInstance()
 
-                                        // Leer datos existentes del usuario desde Firestore
+                                        // Leer datos y puntos existentes del usuario desde Firestore ('usuarios')
                                         db.collection("usuarios").document(uid).get()
                                             .addOnSuccessListener { doc ->
                                                 val savedName = doc.getString("nombre")
                                                     ?: doc.getString("name")
-                                                    ?: cleanEmail.substringBefore("@")
-                                                loading = false
-                                                onSignInWithEmail(cleanEmail, savedName)
+                                                val cloudPts = (doc.getLong("puntos") ?: doc.getLong("points"))?.toInt()
+
+                                                if (cloudPts != null) {
+                                                    PointsRepository(context).setCloudPointsForAccount(accountKey, cloudPts)
+                                                    loading = false
+                                                    onSignInWithEmail(cleanEmail, savedName ?: cleanEmail.substringBefore("@"))
+                                                } else {
+                                                    db.collection("usuarios").document(emailKey).get()
+                                                        .addOnSuccessListener { emailDoc ->
+                                                            val fallbackName = savedName
+                                                                ?: emailDoc.getString("nombre")
+                                                                ?: emailDoc.getString("name")
+                                                                ?: cleanEmail.substringBefore("@")
+                                                            val fallbackPts = (emailDoc.getLong("puntos") ?: emailDoc.getLong("points"))?.toInt()
+                                                            if (fallbackPts != null) {
+                                                                PointsRepository(context).setCloudPointsForAccount(accountKey, fallbackPts)
+                                                            }
+                                                            loading = false
+                                                            onSignInWithEmail(cleanEmail, fallbackName)
+                                                        }
+                                                        .addOnFailureListener {
+                                                            loading = false
+                                                            onSignInWithEmail(cleanEmail, savedName ?: cleanEmail.substringBefore("@"))
+                                                        }
+                                                }
                                             }
                                             .addOnFailureListener {
                                                 loading = false

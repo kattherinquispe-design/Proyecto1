@@ -298,10 +298,13 @@ fun SmartBusNavigation() {
 
     // Cada cuenta tiene su propio saldo de puntos.
     LaunchedEffect(session?.storageKey) {
-
         pointsRepository.useAccount(session?.storageKey)
         points = pointsRepository.getPoints()
         redeemedRewardIds = pointsRepository.getRedeemedRewardIds()
+        pointsRepository.syncPointsFromCloudIfNeeded { cloudPoints ->
+            points = cloudPoints
+            redeemedRewardIds = pointsRepository.getRedeemedRewardIds()
+        }
     }
 
     // Al elegir destino, se busca que rutas sirven ahi en un radio de 400m
@@ -332,6 +335,10 @@ fun SmartBusNavigation() {
     LaunchedEffect(currentTab) {
         points = pointsRepository.getPoints()
         redeemedRewardIds = pointsRepository.getRedeemedRewardIds()
+        pointsRepository.syncPointsFromCloudIfNeeded { cloudPoints ->
+            points = cloudPoints
+            redeemedRewardIds = pointsRepository.getRedeemedRewardIds()
+        }
     }
 
     LaunchedEffect(pendingNav) {
@@ -352,8 +359,9 @@ fun SmartBusNavigation() {
     }
 
     LaunchedEffect(Unit) {
-        PointsEventManager.pointsEvents.collect {
-            points = pointsRepository.getPoints()
+        PointsEventManager.pointsEvents.collect { newPoints ->
+            val current = pointsRepository.getPoints()
+            points = if (current > 0 || newPoints == 0) current else newPoints
             redeemedRewardIds = pointsRepository.getRedeemedRewardIds()
         }
     }
@@ -393,6 +401,14 @@ fun SmartBusNavigation() {
             points = points,
             onBack = { overlay = null },
             onSignedIn = {
+                val activeKey = sessionManager.session.value?.storageKey
+                pointsRepository.useAccount(activeKey)
+                points = pointsRepository.getPoints()
+                redeemedRewardIds = pointsRepository.getRedeemedRewardIds()
+                pointsRepository.syncPointsFromCloudIfNeeded { cloudPoints ->
+                    points = cloudPoints
+                    redeemedRewardIds = pointsRepository.getRedeemedRewardIds()
+                }
                 overlay = null
                 if (pendingDriverMode) {
                     sessionManager.setRole(UserRole.DRIVER)

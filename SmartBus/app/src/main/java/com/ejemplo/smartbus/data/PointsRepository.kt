@@ -32,22 +32,23 @@ class PointsRepository(context: Context) {
         val effectiveKey = explicitAccountId ?: sessionKey
         val targetName = preferencesName(effectiveKey)
         val targetPrefs = appContext.getSharedPreferences(targetName, Context.MODE_PRIVATE)
-
-        // Si el usuario tiene cuenta activa y habia puntos acumulados en el archivo anonimo,
-        // migrarlos automaticamente para que no se pierdan.
-        if (!effectiveKey.isNullOrBlank()) {
-            val anonPrefs = appContext.getSharedPreferences("smartbus_points", Context.MODE_PRIVATE)
-            val anonPoints = anonPrefs.getInt(KEY_POINTS, 0)
-            if (anonPoints > 0) {
-                val currentAccountPoints = targetPrefs.getInt(KEY_POINTS, 0)
-                val merged = currentAccountPoints + anonPoints
-                targetPrefs.edit().putInt(KEY_POINTS, merged).apply()
-                anonPrefs.edit().putInt(KEY_POINTS, 0).apply()
-            }
-        }
-
         preferences = targetPrefs
         return targetPrefs
+    }
+
+    /**
+     * Guarda directamente el saldo proveniente de Firestore en la cuenta indicada
+     * y notifica a toda la interfaz de inmediato.
+     */
+    fun setCloudPointsForAccount(accountKey: String?, cloudPoints: Int) {
+        val key = accountKey?.trim()?.lowercase()
+        if (!key.isNullOrBlank()) {
+            explicitAccountId = key
+        }
+        val targetPrefs = appContext.getSharedPreferences(preferencesName(key ?: explicitAccountId), Context.MODE_PRIVATE)
+        targetPrefs.edit().putInt(KEY_POINTS, cloudPoints).commit()
+        preferences = targetPrefs
+        PointsEventManager.notifyPointsAdded(cloudPoints)
     }
 
     /**
@@ -55,7 +56,7 @@ class PointsRepository(context: Context) {
      * usaban el telefono compartian el mismo saldo.
      */
     fun useAccount(accountId: String?) {
-        explicitAccountId = accountId
+        explicitAccountId = accountId?.trim()?.lowercase()
         syncActivePrefs()
         syncPointsFromCloudIfNeeded()
     }
@@ -64,78 +65,129 @@ class PointsRepository(context: Context) {
         if (accountId.isNullOrBlank()) {
             "smartbus_points"
         } else {
-            "smartbus_points_$accountId"
+            "smartbus_points_${accountId.trim().lowercase()}"
         }
+
+    private fun resolveUserDocumentIds(): List<String> {
+        val session = SessionManager.get(appContext).session.value
+        val email = session?.email.orEmpty().trim().lowercase()
+        val emailKey = if (email.isNotBlank()) email.replace("@", "_").replace(".", "_") else ""
+        val authUser = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
+        val authEmail = authUser?.email.orEmpty().trim().lowercase()
+        val authUid = if (authUser != null && (email.isBlank() || authEmail == email)) {
+            authUser.uid
+        } else {
+            null
+        }
+        val fallbackId = session?.userId.orEmpty().trim()
+        return listOfNotNull(
+            authUid?.takeIf { it.isNotBlank() },
+            emailKey.takeIf { it.isNotBlank() },
+            fallbackId.takeIf { it.isNotBlank() && !it.contains("@") }
+        ).distinct()
+    }
 
     /**
      * Sincroniza el saldo de puntos actual hacia la coleccion 'usuarios' de Firebase Firestore.
+     * Actualiza tanto el documento por UID de Auth como el documento por clave de correo
+     * para garantizar que el descuento por canje o aumento por viaje se refleje de inmediato.
      */
     private fun syncPointsToFirestore(totalPoints: Int) {
         try {
             val session = SessionManager.get(appContext).session.value
-            val authUid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
             val email = session?.email.orEmpty().trim().lowercase()
-            val uid = when {
-                !authUid.isNullOrBlank() -> authUid
-                email.isNotBlank() -> email.replace("@", "_").replace(".", "_")
-                session != null && session.userId.isNotBlank() -> session.userId
-                else -> return
-            }
+            val docIds = resolveUserDocumentIds()
+            if (docIds.isEmpty()) return
 
+            val now = System.currentTimeMillis()
             val data = hashMapOf<String, Any>(
                 "puntos" to totalPoints,
-                "updatedAt" to System.currentTimeMillis()
+                "points" to totalPoints,
+                "updatedAt" to now
             )
             if (email.isNotBlank()) {
                 data["correo"] = email
+                data["email"] = email
             }
             if (session != null && session.name.isNotBlank()) {
                 data["nombre"] = session.name
+                data["name"] = session.name
             }
 
-            FirebaseFirestore.getInstance()
-                .collection("usuarios")
-                .document(uid)
-                .set(data, SetOptions.merge())
+            val db = FirebaseFirestore.getInstance()
+            docIds.forEach { docId ->
+                db.collection("usuarios")
+                    .document(docId)
+                    .set(data, SetOptions.merge())
+            }
         } catch (_: Exception) {
         }
     }
 
     /**
-     * Recupera los puntos guardados en Firestore ('usuarios') cuando el saldo local
-     * aun no fue inicializado (por ejemplo al iniciar sesion en un telefono limpio).
+     * Recupera y sincroniza los puntos guardados en Firestore ('usuarios') para la cuenta activa.
      */
-    fun syncPointsFromCloudIfNeeded() {
+    fun syncPointsFromCloudIfNeeded(onSynced: ((Int) -> Unit)? = null) {
         try {
             val session = SessionManager.get(appContext).session.value ?: return
             if (session.isGuest) return
-            val authUid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
             val email = session.email.trim().lowercase()
-            val uid = when {
-                !authUid.isNullOrBlank() -> authUid
-                email.isNotBlank() -> email.replace("@", "_").replace(".", "_")
-                session.userId.isNotBlank() -> session.userId
-                else -> return
+            val docIds = resolveUserDocumentIds()
+            if (docIds.isEmpty() && email.isBlank()) return
+
+            val db = FirebaseFirestore.getInstance()
+            val primaryId = docIds.firstOrNull()
+
+            fun applyCloudScore(cloudPoints: Int) {
+                val prefs = syncActivePrefs()
+                prefs.edit().putInt(KEY_POINTS, cloudPoints).commit()
+                PointsEventManager.notifyPointsAdded(cloudPoints)
+                onSynced?.invoke(cloudPoints)
             }
 
-            FirebaseFirestore.getInstance()
-                .collection("usuarios")
-                .document(uid)
-                .get()
-                .addOnSuccessListener { doc ->
-                    if (doc != null && doc.exists()) {
-                        val cloudPoints = (doc.getLong("puntos") ?: doc.getLong("points"))?.toInt() ?: return@addOnSuccessListener
-                        val prefs = syncActivePrefs()
-                        val localPoints = prefs.getInt(KEY_POINTS, 0)
-                        val hasLocalHistory = !prefs.getString(KEY_HISTORY, null).isNullOrBlank()
-                        if (localPoints == 0 && !hasLocalHistory && cloudPoints > 0) {
-                            prefs.edit().putInt(KEY_POINTS, cloudPoints).apply()
-                            PointsEventManager.notifyPointsAdded(cloudPoints)
-                        } else if (localPoints > 0 && cloudPoints != localPoints) {
-                            syncPointsToFirestore(localPoints)
+            fun checkByEmailQuery() {
+                if (email.isBlank()) return
+                db.collection("usuarios")
+                    .whereEqualTo("correo", email)
+                    .limit(1)
+                    .get()
+                    .addOnSuccessListener { snap ->
+                        val doc = snap.documents.firstOrNull()
+                        val pts = (doc?.getLong("puntos") ?: doc?.getLong("points"))?.toInt()
+                        if (pts != null) {
+                            applyCloudScore(pts)
                         }
                     }
+            }
+
+            fun checkSecondaryDoc(index: Int) {
+                if (index >= docIds.size) {
+                    checkByEmailQuery()
+                    return
                 }
+                db.collection("usuarios")
+                    .document(docIds[index])
+                    .get()
+                    .addOnSuccessListener { doc ->
+                        val pts = if (doc != null && doc.exists()) {
+                            (doc.getLong("puntos") ?: doc.getLong("points"))?.toInt()
+                        } else null
+                        if (pts != null) {
+                            applyCloudScore(pts)
+                        } else {
+                            checkSecondaryDoc(index + 1)
+                        }
+                    }
+                    .addOnFailureListener {
+                        checkSecondaryDoc(index + 1)
+                    }
+            }
+
+            if (primaryId != null) {
+                checkSecondaryDoc(0)
+            } else {
+                checkByEmailQuery()
+            }
         } catch (_: Exception) {
         }
     }
@@ -229,7 +281,7 @@ class PointsRepository(context: Context) {
 
             if (matchedKey != null && matchedObj != null) {
                 if (matchedObj.optBoolean("isUsed", false)) {
-                    return false // Ya fue usado previamente
+                    return false
                 }
                 val now = System.currentTimeMillis()
                 matchedObj.put("isUsed", true)
@@ -237,9 +289,8 @@ class PointsRepository(context: Context) {
                 obj.put(matchedKey, matchedObj)
                 prefs.edit().putString(KEY_REDEEMED, obj.toString()).commit()
 
-                // Sincronizar en Firebase Firestore
                 try {
-                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    val firestore = FirebaseFirestore.getInstance()
                     firestore.collection("canjes").document(code).update(
                         mapOf(
                             "status" to "USADO",
@@ -371,22 +422,28 @@ class PointsRepository(context: Context) {
         val charged = redeemPoints(
             points = points,
             rewardName = rewardName,
+            rewardId = rewardId,
             redemptionCode = code
         )
 
         if (!charged) return null
 
         markRewardRedeemed(rewardId, code)
+        val remaining = getPoints()
+        PointsEventManager.notifyPointsAdded(remaining)
 
-        // Registrar en Firebase Firestore para auditoría y validación en la nube
         try {
-            val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            val session = SessionManager.get(appContext).session.value
+            val firestore = FirebaseFirestore.getInstance()
             firestore.collection("canjes").document(code).set(
                 mapOf(
                     "code" to code,
                     "rewardId" to rewardId,
                     "rewardName" to rewardName,
                     "pointsCost" to points,
+                    "remainingPoints" to remaining,
+                    "correo" to session?.email.orEmpty(),
+                    "nombre" to session?.name.orEmpty(),
                     "status" to "ACTIVO",
                     "redeemedAt" to System.currentTimeMillis(),
                     "usedAt" to null

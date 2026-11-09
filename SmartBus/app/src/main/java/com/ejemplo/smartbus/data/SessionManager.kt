@@ -267,6 +267,7 @@ class SessionManager(context: Context) {
     }
 
     fun signOut() {
+        runCatching { FirebaseAuth.getInstance().signOut() }
         preferences.edit().remove(KEY_SIGNED_IN).apply()
         _session.value = null
     }
