@@ -1,20 +1,18 @@
 package com.ejemplo.smartbus.ui.screens
 
-import android.graphics.Bitmap
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,11 +31,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import com.ejemplo.smartbus.data.RedeemedReward
 import com.ejemplo.smartbus.data.model.Reward
 import com.ejemplo.smartbus.ui.components.QrCodeGenerator
 import com.ejemplo.smartbus.ui.components.SmartBusBottomBar
 import com.ejemplo.smartbus.ui.components.SmartBusTab
+import com.ejemplo.smartbus.ui.components.VoucherScannerValidatorModal
 import com.ejemplo.smartbus.ui.theme.*
+import com.google.firebase.firestore.FirebaseFirestore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,22 +51,56 @@ fun RewardsScreen(
     onBack: () -> Unit,
     redeemedCode: String? = null,
     redeemedRewardIds: Set<Int> = emptySet(),
+    recentVouchers: List<RedeemedReward> = emptyList(),
     onTabSelected: (SmartBusTab) -> Unit = {},
     onMarkAsUsed: ((String) -> Boolean)? = null
 ) {
     val clipboard = LocalClipboardManager.current
     var selectedRewardForRedeem by remember { mutableStateOf<Reward?>(null) }
+    var lastClickedReward by remember { mutableStateOf<Reward?>(null) }
     var activeVoucherReward by remember { mutableStateOf<Pair<Reward, String>?>(null) }
     var voucherIsUsed by remember { mutableStateOf(false) }
+    var voucherUsedAt by remember { mutableStateOf<Long?>(null) }
+    var showScannerModal by remember { mutableStateOf(false) }
 
-    // Si viene un código nuevo recién canjeado, abrir automáticamente el QR
+    // Si viene un código único recién canjeado, abrir automáticamente su QR
     LaunchedEffect(redeemedCode) {
         if (!redeemedCode.isNullOrBlank()) {
-            val matched = rewards.firstOrNull { it.id in redeemedRewardIds } ?: rewards.firstOrNull()
+            val idFromCode = redeemedCode.split("-").getOrNull(1)?.toIntOrNull()
+                ?: redeemedCode.split("-").getOrNull(2)?.toIntOrNull()
+            val matched = lastClickedReward
+                ?: rewards.firstOrNull { it.id == idFromCode }
+                ?: rewards.firstOrNull()
             if (matched != null) {
                 activeVoucherReward = Pair(matched, redeemedCode)
                 voucherIsUsed = false
+                voucherUsedAt = null
             }
+        }
+    }
+
+    // Escuchar en tiempo real en Firebase Firestore si el código único activo fue confirmado por el escáner
+    val activeCode = activeVoucherReward?.second
+    DisposableEffect(activeCode) {
+        if (activeCode.isNullOrBlank()) {
+            return@DisposableEffect onDispose { }
+        }
+        val listener = try {
+            FirebaseFirestore.getInstance()
+                .collection("canjes")
+                .document(activeCode)
+                .addSnapshotListener { snap, _ ->
+                    if (snap != null && snap.exists() && snap.getString("status") == "USADO") {
+                        voucherIsUsed = true
+                        voucherUsedAt = snap.getLong("usedAt") ?: System.currentTimeMillis()
+                        onMarkAsUsed?.invoke(activeCode)
+                    }
+                }
+        } catch (_: Exception) {
+            null
+        }
+        onDispose {
+            listener?.remove()
         }
     }
 
@@ -85,14 +120,14 @@ fun RewardsScreen(
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             // =======================================================
-            // 1. ENCABEZADO Y BALANCE DE PUNTOS DINÁMICO
+            // 1. ENCABEZADO, ESCÁNER Y BALANCE DE PUNTOS DINÁMICO
             // =======================================================
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Recompensas",
                         fontFamily = SmartBusDisplay,
@@ -101,36 +136,67 @@ fun RewardsScreen(
                         color = SmartBusText
                     )
                     Text(
-                        text = "Canjea tus puntos por premios y pasajes",
+                        text = "Canjea tus puntos cuantas veces quieras",
                         fontFamily = SmartBusBody,
                         fontSize = 12.sp,
                         color = SmartBusTextSecondary
                     )
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = AppPalette.primarySoft,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, AppPalette.primary.copy(alpha = 0.3f))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        onClick = { showScannerModal = true },
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF0F172A)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = null,
-                            tint = AppPalette.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = "$points pts",
-                            fontFamily = SmartBusDisplay,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = AppPalette.primary
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCodeScanner,
+                                contentDescription = "Escanear QR",
+                                tint = Color.White,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "Escáner",
+                                fontFamily = SmartBusBody,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color.White
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = AppPalette.primarySoft,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, AppPalette.primary.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = AppPalette.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "$points pts",
+                                fontFamily = SmartBusDisplay,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = AppPalette.primary
+                            )
+                        }
                     }
                 }
             }
@@ -138,7 +204,7 @@ fun RewardsScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             // =======================================================
-            // 2. GRILLA DE RECOMPENSAS CON FOTOS REALES Y ESTÉTICAS
+            // 2. GRILLA DE RECOMPENSAS (SIEMPRE DISPONIBLES MIENTRAS HAYA PUNTOS)
             // =======================================================
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
@@ -148,7 +214,6 @@ fun RewardsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(rewards, key = { it.id }) { reward ->
-                    val alreadyRedeemed = reward.id in redeemedRewardIds
                     val canAfford = points >= reward.points && reward.isAvailable && reward.stock > 0
 
                     Card(
@@ -158,7 +223,6 @@ fun RewardsScreen(
                         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                     ) {
                         Column {
-                            // FOTO REAL CON EFECTO DE BORDES REDONDEADOS
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -193,7 +257,6 @@ fun RewardsScreen(
                                     }
                                 }
 
-                                // Insignia de Costo en Puntos
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
@@ -212,7 +275,6 @@ fun RewardsScreen(
                                 }
                             }
 
-                            // INFORMACIÓN DEL PRODUCTO
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
                                     text = reward.name,
@@ -239,14 +301,14 @@ fun RewardsScreen(
 
                                 Spacer(modifier = Modifier.height(10.dp))
 
-                                // BOTÓN DE CANJE INTELIGENTE
+                                // BOTÓN DE CANJE SIEMPRE HABILITADO MIENTRAS TENGA PUNTOS
                                 Button(
                                     onClick = {
-                                        if (canAfford && !alreadyRedeemed) {
+                                        if (canAfford) {
                                             selectedRewardForRedeem = reward
                                         }
                                     },
-                                    enabled = canAfford && !alreadyRedeemed,
+                                    enabled = canAfford,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(36.dp),
@@ -254,23 +316,19 @@ fun RewardsScreen(
                                     contentPadding = PaddingValues(0.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = AppPalette.primary,
-                                        disabledContainerColor = if (alreadyRedeemed) Color(0xFFE2E8F0) else Color(0xFFF1F5F9)
+                                        disabledContainerColor = Color(0xFFF1F5F9)
                                     )
                                 ) {
                                     Text(
-                                        text = when {
-                                            alreadyRedeemed -> "Canjeado ✓"
-                                            !canAfford -> "Faltan ${reward.points - points} pts"
-                                            else -> "Canjear"
+                                        text = if (canAfford) {
+                                            "Canjear"
+                                        } else {
+                                            "Faltan ${(reward.points - points).coerceAtLeast(0)} pts"
                                         },
                                         fontFamily = SmartBusBody,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = when {
-                                            alreadyRedeemed -> Color(0xFF64748B)
-                                            !canAfford -> Color(0xFF94A3B8)
-                                            else -> Color.White
-                                        }
+                                        color = if (canAfford) Color.White else Color(0xFF94A3B8)
                                     )
                                 }
                             }
@@ -282,7 +340,7 @@ fun RewardsScreen(
     }
 
     // =======================================================
-    // 3. DIÁLOGO DE CONFIRMACIÓN ANTES DE GASTAR PUNTOS
+    // 3. DIÁLOGO DE CONFIRMACIÓN ANTES DE DESCONTAR PUNTOS
     // =======================================================
     selectedRewardForRedeem?.let { reward ->
         AlertDialog(
@@ -303,7 +361,7 @@ fun RewardsScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "🔒 Se generará un código QR único y seguro de un solo uso. Una vez consumido en caja no podrá reutilizarse.",
+                        text = "🔒 Se descontarán ${reward.points} puntos de tu saldo y se generará un código QR único de un solo uso.",
                         fontFamily = SmartBusBody,
                         fontSize = 12.sp,
                         color = SmartBusTextSecondary
@@ -314,6 +372,7 @@ fun RewardsScreen(
                 Button(
                     onClick = {
                         val toRedeem = reward
+                        lastClickedReward = toRedeem
                         selectedRewardForRedeem = null
                         onRedeem(toRedeem)
                     },
@@ -331,16 +390,19 @@ fun RewardsScreen(
     }
 
     // =======================================================
-    // 4. MODAL DEL VOUCHER QR DE SEGURIDAD (UN SOLO USO)
+    // 4. MODAL DEL VOUCHER QR DE SEGURIDAD (CÓDIGO ÚNICO + NOMBRE ABAJO + BOTÓN CONFIRMADO)
     // =======================================================
     activeVoucherReward?.let { (reward, code) ->
-        val qrBitmap = remember(code) { QrCodeGenerator.generate(code, 480) }
+        val qrPayload = remember(code, reward.name, reward.points) {
+            QrCodeGenerator.buildVoucherPayload(code, reward.name, reward.points)
+        }
+        val qrBitmap = remember(qrPayload) { QrCodeGenerator.generate(qrPayload, 512) }
 
         Dialog(onDismissRequest = { activeVoucherReward = null }) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(12.dp),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = Color.White),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
@@ -357,7 +419,7 @@ fun RewardsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Voucher de Canje",
+                            text = "Código Único de Canje",
                             fontFamily = SmartBusDisplay,
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp,
@@ -373,21 +435,10 @@ fun RewardsScreen(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    Text(
-                        text = reward.name,
-                        fontFamily = SmartBusDisplay,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = AppPalette.primary,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
                     // CONTENEDOR DEL CÓDIGO QR
                     Box(
                         modifier = Modifier
-                            .size(200.dp)
+                            .size(190.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .background(if (voucherIsUsed) Color(0xFFF1F5F9) else Color.White)
                             .border(
@@ -395,16 +446,14 @@ fun RewardsScreen(
                                 color = if (voucherIsUsed) Color(0xFFEF4444) else AppPalette.primarySoft,
                                 shape = RoundedCornerShape(16.dp)
                             )
-                            .padding(12.dp),
+                            .padding(10.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         if (qrBitmap != null) {
                             Image(
                                 bitmap = qrBitmap,
                                 contentDescription = "QR de canje",
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .then(if (voucherIsUsed) Modifier.clip(RoundedCornerShape(8.dp)) else Modifier)
+                                modifier = Modifier.fillMaxSize()
                             )
                         } else {
                             Icon(
@@ -415,7 +464,6 @@ fun RewardsScreen(
                             )
                         }
 
-                        // SELLO "¡YA FUE USADO!" SI SE CONFIRMÓ
                         if (voucherIsUsed) {
                             Box(
                                 modifier = Modifier
@@ -429,10 +477,10 @@ fun RewardsScreen(
                                     shadowElevation = 4.dp
                                 ) {
                                     Text(
-                                        text = "¡YA FUE USADO!",
+                                        text = "¡CÓDIGO YA USADO!",
                                         color = Color.White,
                                         fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 14.sp,
+                                        fontSize = 13.sp,
                                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                     )
                                 }
@@ -442,69 +490,116 @@ fun RewardsScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // CÓDIGO TEXTUAL COPIABLE
+                    // 1. ARRIBA: EL CÓDIGO ÚNICO
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         color = Color(0xFFF8FAFC),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                        modifier = Modifier.clickable {
-                            clipboard.setText(AnnotatedString(code))
-                        }
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                clipboard.setText(AnnotatedString(code))
+                            }
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = code,
+                                text = "CÓDIGO ÚNICO",
                                 fontFamily = SmartBusBody,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFF334155)
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF64748B)
                             )
-                            Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "Copiar",
-                                tint = AppPalette.primary,
-                                modifier = Modifier.size(15.dp)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = code,
+                                    fontFamily = SmartBusDisplay,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFF0F172A)
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copiar",
+                                    tint = AppPalette.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // 2. DEBAJO DEL CÓDIGO: EL NOMBRE DEL PREMIO POR EL QUE CANJEÓ
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = AppPalette.primarySoft,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, AppPalette.primary.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "CANJEADO POR EL PREMIO",
+                                fontFamily = SmartBusBody,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppPalette.primaryDark
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = reward.name,
+                                fontFamily = SmartBusDisplay,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = AppPalette.primary,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = "-${reward.points} puntos descontados",
+                                fontFamily = SmartBusBody,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF475569)
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                    // ESTADO Y BOTÓN DE CONFIRMACIÓN DE USO ÚNICO
+                    // 3. BOTÓN DE CONFIRMADO PARA VALIDAR QUE FUE USADO 1 SOLA VEZ
                     if (!voucherIsUsed) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFFECFDF5),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.4f))
-                        ) {
-                            Text(
-                                text = "● ACTIVO PARA CANJE EN CAJA / BUS",
-                                color = Color(0xFF047857),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
                         Button(
                             onClick = {
                                 voucherIsUsed = true
+                                voucherUsedAt = System.currentTimeMillis()
                                 onMarkAsUsed?.invoke(code)
                             },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp),
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669))
                         ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Confirmar uso en caja (1 solo uso)",
+                                text = "Confirmado (Validar 1 solo uso)",
                                 fontFamily = SmartBusBody,
-                                fontSize = 12.sp,
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
                             )
@@ -515,18 +610,40 @@ fun RewardsScreen(
                             color = Color(0xFFFEF2F2),
                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f))
                         ) {
-                            val timeStr = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
+                            val timeStr = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
+                                .format(Date(voucherUsedAt ?: System.currentTimeMillis()))
                             Text(
-                                text = "Consumido el $timeStr • No reutilizable",
+                                text = "🔒 Confirmado y bloqueado el $timeStr • 1 solo uso",
                                 color = Color(0xFFB91C1C),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
                 }
             }
         }
+    }
+
+    // =======================================================
+    // 5. MODAL DEL ESCÁNER DE CÓDIGOS ÚNICOS
+    // =======================================================
+    if (showScannerModal) {
+        VoucherScannerValidatorModal(
+            initialCode = activeVoucherReward?.second.orEmpty(),
+            initialRewardName = activeVoucherReward?.first?.name.orEmpty(),
+            initialPoints = activeVoucherReward?.first?.points ?: 0,
+            recentVouchers = recentVouchers,
+            onConfirmCodeUsed = { confirmedCode ->
+                onMarkAsUsed?.invoke(confirmedCode)
+                if (activeVoucherReward?.second == confirmedCode) {
+                    voucherIsUsed = true
+                    voucherUsedAt = System.currentTimeMillis()
+                }
+            },
+            onDismiss = { showScannerModal = false }
+        )
     }
 }

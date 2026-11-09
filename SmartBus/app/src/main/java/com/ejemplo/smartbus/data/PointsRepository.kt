@@ -199,36 +199,36 @@ class PointsRepository(context: Context) {
     }
 
     /**
-     * Devuelve el codigo de canje activo de una recompensa.
-     * Si el voucher anterior ya fue marcado como usado, permite volver a canjear.
+     * Devuelve el ultimo codigo de canje generado para una recompensa.
      */
     fun getRedemptionCode(rewardId: Int): String? {
-        val prefs = syncActivePrefs()
-        val json = prefs.getString(KEY_REDEEMED, null) ?: return null
-        return try {
-            val obj = JSONObject(json)
-            if (!obj.has(rewardId.toString())) return null
-            val value = obj.get(rewardId.toString())
-            if (value is JSONObject) {
-                if (value.optBoolean("isUsed", false)) null else value.optString("code")
-            } else {
-                value.toString()
-            }
-        } catch (_: Exception) {
-            null
-        }
+        return getRedeemedRewards().firstOrNull { it.id == rewardId && !it.isUsed }?.code
     }
 
     /**
-     * True si la recompensa tiene un canje activo pendiente de usar.
+     * Los premios nunca se bloquean por tipo de premio; el bloqueo de seguridad
+     * es exclusivamente por cada código único generado.
      */
-    fun isRewardRedeemed(rewardId: Int): Boolean = getRedemptionCode(rewardId) != null
+    fun isRewardRedeemed(rewardId: Int): Boolean = false
 
     /**
-     * Marca una recompensa como canjeada para bloquear su reutilizacion.
+     * Verifica si un código único específico ya fue utilizado/confirmado.
+     */
+    fun isVoucherCodeUsed(code: String): Boolean {
+        val clean = code.trim()
+        if (clean.isBlank()) return false
+        return getRedeemedRewards().any { it.code == clean && it.isUsed }
+    }
+
+    /**
+     * Registra un código único de canje asociado al premio canjeado.
+     * Se guarda indexado por su código único para permitir múltiples canjes
+     * del mismo premio (descontando puntos por cada canje).
      */
     private fun markRewardRedeemed(
         rewardId: Int,
+        rewardName: String,
+        pointsCost: Int,
         code: String,
         isUsed: Boolean = false,
         usedAt: Long? = null,
@@ -242,100 +242,98 @@ class PointsRepository(context: Context) {
         }
         val entry = JSONObject().apply {
             put("code", code)
+            put("rewardId", rewardId)
+            put("rewardName", rewardName)
+            put("points", pointsCost)
             put("isUsed", isUsed)
             if (usedAt != null) put("usedAt", usedAt)
             put("redeemedAt", redeemedAt)
         }
-        obj.put(rewardId.toString(), entry)
+        obj.put(code, entry)
         prefs.edit().putString(KEY_REDEEMED, obj.toString()).commit()
     }
 
     /**
-     * Confirma y consume un canje (1 solo uso). Una vez confirmado, no puede volver a usarse.
+     * Confirma y consume un código único de canje (1 solo uso).
+     * Una vez confirmado este código único, queda bloqueado permanentemente.
      */
     fun markRedemptionAsUsed(code: String): Boolean {
+        val cleanCode = code.trim()
+        if (cleanCode.isBlank()) return false
         val prefs = syncActivePrefs()
-        val json = prefs.getString(KEY_REDEEMED, null) ?: return false
-        return try {
-            val obj = JSONObject(json)
-            var matchedKey: String? = null
-            var matchedObj: JSONObject? = null
-
-            val keys = obj.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                val value = obj.get(key)
-                if (value is JSONObject && value.optString("code") == code) {
-                    matchedKey = key
-                    matchedObj = value
-                    break
-                } else if (value.toString() == code) {
-                    matchedKey = key
-                    matchedObj = JSONObject().apply {
-                        put("code", code)
-                        put("redeemedAt", System.currentTimeMillis())
-                    }
-                    break
-                }
-            }
-
-            if (matchedKey != null && matchedObj != null) {
-                if (matchedObj.optBoolean("isUsed", false)) {
-                    return false
-                }
-                val now = System.currentTimeMillis()
-                matchedObj.put("isUsed", true)
-                matchedObj.put("usedAt", now)
-                obj.put(matchedKey, matchedObj)
-                prefs.edit().putString(KEY_REDEEMED, obj.toString()).commit()
-
-                try {
-                    val firestore = FirebaseFirestore.getInstance()
-                    firestore.collection("canjes").document(code).update(
-                        mapOf(
-                            "status" to "USADO",
-                            "usedAt" to now
-                        )
-                    )
-                } catch (_: Exception) {
-                }
-                true
-            } else {
-                false
-            }
+        val now = System.currentTimeMillis()
+        val obj = try {
+            JSONObject(prefs.getString(KEY_REDEEMED, null) ?: "{}")
         } catch (_: Exception) {
-            false
+            JSONObject()
         }
+
+        var matchedKey: String? = null
+        var matchedObj: JSONObject? = null
+
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = obj.get(key)
+            if (key == cleanCode && value is JSONObject) {
+                matchedKey = key
+                matchedObj = value
+                break
+            } else if (value is JSONObject && value.optString("code") == cleanCode) {
+                matchedKey = key
+                matchedObj = value
+                break
+            } else if (value.toString() == cleanCode) {
+                matchedKey = key
+                matchedObj = JSONObject().apply {
+                    put("code", cleanCode)
+                    put("rewardId", key.toIntOrNull() ?: 0)
+                    put("redeemedAt", now)
+                }
+                break
+            }
+        }
+
+        if (matchedObj != null && matchedObj.optBoolean("isUsed", false)) {
+            return false
+        }
+
+        val targetKey = matchedKey ?: cleanCode
+        val updatedEntry = (matchedObj ?: JSONObject().apply {
+            put("code", cleanCode)
+            put("redeemedAt", now)
+        }).apply {
+            put("isUsed", true)
+            put("usedAt", now)
+        }
+        obj.put(targetKey, updatedEntry)
+        prefs.edit().putString(KEY_REDEEMED, obj.toString()).commit()
+
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            firestore.collection("canjes").document(cleanCode).set(
+                mapOf(
+                    "code" to cleanCode,
+                    "status" to "USADO",
+                    "usedAt" to now
+                ),
+                SetOptions.merge()
+            )
+        } catch (_: Exception) {
+        }
+        return true
     }
 
     /**
-     * Devuelve los ids de recompensas con canje activo.
+     * Devuelve un conjunto vacío para que ningún premio se deshabilite en el catálogo:
+     * el usuario puede canjear cualquier premio cuantas veces quiera mientras tenga puntos,
+     * y el bloqueo de seguridad se aplica únicamente por cada código único generado.
      */
-    fun getRedeemedRewardIds(): Set<Int> {
-        val prefs = syncActivePrefs()
-        val json = prefs.getString(KEY_REDEEMED, null) ?: return emptySet()
-        return try {
-            val obj = JSONObject(json)
-            val ids = mutableSetOf<Int>()
-            obj.keys().forEach { key ->
-                val id = key.toIntOrNull() ?: 0
-                if (id != 0) {
-                    val value = obj.get(key)
-                    val isUsed = value is JSONObject && value.optBoolean("isUsed", false)
-                    if (!isUsed) {
-                        ids.add(id)
-                    }
-                }
-            }
-            ids
-        } catch (_: Exception) {
-            emptySet()
-        }
-    }
+    fun getRedeemedRewardIds(): Set<Int> = emptySet()
 
     /**
-     * Devuelve el detalle de las recompensas ya canjeadas:
-     * id, nombre, costo, codigo de canje y si ya fue consumido.
+     * Devuelve el detalle de todos los códigos únicos canjeados:
+     * id, nombre del premio, costo en puntos, código único y si ese código ya fue usado.
      */
     fun getRedeemedRewards(): List<RedeemedReward> {
         val prefs = syncActivePrefs()
@@ -344,38 +342,46 @@ class PointsRepository(context: Context) {
             val obj = JSONObject(json)
             val result = mutableListOf<RedeemedReward>()
             obj.keys().forEach { key ->
-                val id = key.toIntOrNull() ?: return@forEach
-                if (id == 0) return@forEach
-                val reward = RewardsCatalog.byId(id)
                 val value = obj.get(key)
-                val code: String
-                val isUsed: Boolean
-                val usedAt: Long?
-                val redeemedAt: Long
-
                 if (value is JSONObject) {
-                    code = value.optString("code")
-                    isUsed = value.optBoolean("isUsed", false)
-                    usedAt = if (value.has("usedAt") && !value.isNull("usedAt")) value.getLong("usedAt") else null
-                    redeemedAt = value.optLong("redeemedAt", System.currentTimeMillis())
-                } else {
-                    code = value.toString()
-                    isUsed = false
-                    usedAt = null
-                    redeemedAt = System.currentTimeMillis()
-                }
+                    val code = value.optString("code").ifBlank { key }
+                    val id = value.optInt("rewardId", key.toIntOrNull() ?: 0)
+                    val reward = RewardsCatalog.byId(id)
+                    val savedName = value.optString("rewardName").takeIf { it.isNotBlank() }
+                    val savedPoints = value.optInt("points", -1).takeIf { it >= 0 }
+                    val isUsed = value.optBoolean("isUsed", false)
+                    val usedAt = if (value.has("usedAt") && !value.isNull("usedAt")) value.getLong("usedAt") else null
+                    val redeemedAt = value.optLong("redeemedAt", System.currentTimeMillis())
 
-                result.add(
-                    RedeemedReward(
-                        id = id,
-                        name = reward?.name ?: "Recompensa $id",
-                        points = reward?.points ?: 0,
-                        code = code,
-                        isUsed = isUsed,
-                        usedAt = usedAt,
-                        redeemedAt = redeemedAt
+                    result.add(
+                        RedeemedReward(
+                            id = id,
+                            name = savedName ?: reward?.name ?: "Recompensa MistiGo",
+                            points = savedPoints ?: reward?.points ?: 0,
+                            code = code,
+                            isUsed = isUsed,
+                            usedAt = usedAt,
+                            redeemedAt = redeemedAt
+                        )
                     )
-                )
+                } else {
+                    val id = key.toIntOrNull() ?: 0
+                    val reward = RewardsCatalog.byId(id)
+                    val code = value.toString()
+                    if (code.isNotBlank()) {
+                        result.add(
+                            RedeemedReward(
+                                id = id,
+                                name = reward?.name ?: "Recompensa MistiGo",
+                                points = reward?.points ?: 0,
+                                code = code,
+                                isUsed = false,
+                                usedAt = null,
+                                redeemedAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                }
             }
             result.sortedByDescending { it.redeemedAt }
         } catch (_: Exception) {
@@ -384,21 +390,24 @@ class PointsRepository(context: Context) {
     }
 
     /**
-     * Genera un codigo de canje unico, verificando que no exista otro igual.
+     * Genera un codigo de canje 100% unico para cada operacion de canje.
      */
     fun generateRedemptionCode(rewardId: Int): String {
         var code: String
         do {
-            val randomSuffix = (1000..9999).random()
-            code = "MISTIGO-CANJE-$rewardId-" + System.currentTimeMillis().toString().takeLast(4) + "-" + randomSuffix
+            val randomPart1 = (1000..9999).random()
+            val randomPart2 = (100..999).random()
+            val timeTail = System.currentTimeMillis().toString().takeLast(4)
+            code = "MISTIGO-$rewardId-$timeTail-$randomPart1$randomPart2"
         } while (isCodeUsed(code))
         return code
     }
 
     private fun isCodeUsed(code: String): Boolean {
-        val json = preferences.getString(KEY_REDEEMED, null) ?: return false
+        val json = syncActivePrefs().getString(KEY_REDEEMED, null) ?: return false
         return try {
             val obj = JSONObject(json)
+            if (obj.has(code)) return true
             obj.keys().forEach { key ->
                 val value = obj.get(key)
                 val existingCode = if (value is JSONObject) value.optString("code") else value.toString()
@@ -411,11 +420,11 @@ class PointsRepository(context: Context) {
     }
 
     /**
-     * Canjea una recompensa. Los puntos se descuentan una sola vez:
-     * si la recompensa ya fue utilizada devuelve false y no descuenta nada.
+     * Canjea una recompensa descontando los puntos correspondientes y generando
+     * un código único de un solo uso. Permite canjear el mismo premio cuantas
+     * veces quiera el usuario siempre que tenga saldo suficiente de puntos.
      */
     fun redeemRewardOnce(rewardId: Int, rewardName: String, points: Int): String? {
-        if (isRewardRedeemed(rewardId)) return null
         if (getPoints() < points) return null
 
         val code = generateRedemptionCode(rewardId)
@@ -428,7 +437,12 @@ class PointsRepository(context: Context) {
 
         if (!charged) return null
 
-        markRewardRedeemed(rewardId, code)
+        markRewardRedeemed(
+            rewardId = rewardId,
+            rewardName = rewardName,
+            pointsCost = points,
+            code = code
+        )
         val remaining = getPoints()
         PointsEventManager.notifyPointsAdded(remaining)
 

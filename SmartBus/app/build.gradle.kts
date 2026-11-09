@@ -105,6 +105,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
     implementation("androidx.datastore:datastore-preferences:1.1.0")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("io.coil-kt:coil-compose:2.6.0")
 
     // Inicio de sesion con Google

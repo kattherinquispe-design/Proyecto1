@@ -840,6 +840,7 @@ private fun RewardsTab(
         onBack = { onTabChange(SmartBusTab.HOME) },
         redeemedCode = redeemedCode,
         redeemedRewardIds = redeemedRewardIds,
+        recentVouchers = remember(points, redeemedCode) { pointsRepository.getRedeemedRewards() },
         onTabSelected = onTabChange,
         onMarkAsUsed = { code ->
             val ok = pointsRepository.markRedemptionAsUsed(code)
