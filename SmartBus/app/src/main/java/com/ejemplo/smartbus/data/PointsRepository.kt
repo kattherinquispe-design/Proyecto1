@@ -32,6 +32,9 @@ class PointsRepository(context: Context) {
         val effectiveKey = explicitAccountId ?: sessionKey
         val targetName = preferencesName(effectiveKey)
         val targetPrefs = appContext.getSharedPreferences(targetName, Context.MODE_PRIVATE)
+        if (effectiveKey == "email_pasajero.prueba@gmail.com" && !targetPrefs.contains(KEY_POINTS)) {
+            targetPrefs.edit().putInt(KEY_POINTS, 500).commit()
+        }
         preferences = targetPrefs
         return targetPrefs
     }

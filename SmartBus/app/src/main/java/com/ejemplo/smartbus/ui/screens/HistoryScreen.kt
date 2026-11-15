@@ -214,10 +214,31 @@ fun HistoryScreen(
             if (showEmptyState) {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(bottom = 20.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
-                    item {
-                        EmptyHistoryCard(filter = filter)
+                    if (filter == HistoryFilter.POINTS || filter == HistoryFilter.ALL) {
+                        item {
+                            AvailablePointsProfileCard(
+                                session = session,
+                                points = points,
+                                boardingCount = statistics.boardingCount,
+                                rewardsRedeemed = statistics.rewardsRedeemed,
+                                onRedeemClick = { onTabChange(SmartBusTab.REWARDS) }
+                            )
+                        }
+                        item {
+                            HowToEarnMoreBeautyCard(
+                                onGoToMap = { onTabChange(SmartBusTab.MAP) }
+                            )
+                        }
+                    } else {
+                        item {
+                            EmptyHistoryCard(
+                                filter = filter,
+                                onGoToMap = { onTabChange(SmartBusTab.MAP) }
+                            )
+                        }
                     }
                 }
             } else {
@@ -910,7 +931,10 @@ private fun HistoryFilterBar(
  * Estado vacio (solo aparece cuando el usuario tiene 0 puntos y no tiene movimientos).
  */
 @Composable
-private fun EmptyHistoryCard(filter: HistoryFilter) {
+private fun EmptyHistoryCard(
+    filter: HistoryFilter,
+    onGoToMap: () -> Unit = {}
+) {
 
     Column(
         modifier = Modifier
@@ -936,7 +960,11 @@ private fun EmptyHistoryCard(filter: HistoryFilter) {
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Aún no tienes puntos disponibles",
+            text = if (filter == HistoryFilter.REDEEMS) {
+                "Aún no has realizado canjes"
+            } else {
+                "Aún no tienes puntos disponibles"
+            },
             style = MaterialTheme.typography.titleMedium,
             color = SmartBusText,
             textAlign = TextAlign.Center
@@ -949,7 +977,7 @@ private fun EmptyHistoryCard(filter: HistoryFilter) {
                 HistoryFilter.POINTS ->
                     "Cuando ganes puntos en tus viajes aparecerá aquí tu perfil de puntos."
                 HistoryFilter.REDEEMS ->
-                    "Cuando canjes una recompensa aparecerá aquí."
+                    "Cuando canjes una recompensa aparecerá aquí tu historial de códigos QR únicos."
                 HistoryFilter.ALL ->
                     "Sube a un bus en un paradero para empezar a ganar +20 puntos."
             },
@@ -960,7 +988,7 @@ private fun EmptyHistoryCard(filter: HistoryFilter) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        HowToEarnCard()
+        HowToEarnMoreBeautyCard(onGoToMap = onGoToMap)
     }
 }
 
